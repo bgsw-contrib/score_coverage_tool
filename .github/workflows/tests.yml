@@ -1,0 +1,118 @@
+# *******************************************************************************
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************
+name: Tests
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  push:
+    branches:
+      - main
+  merge_group:
+    types: [checks_requested]
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: write
+  pages: write
+  pull-requests: write
+  id-token: write
+env:
+  ANDROID_HOME: ""
+  ANDROID_SDK_ROOT: ""
+jobs:
+  unit_tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+      - name: Free Disk Space (Ubuntu)
+        uses: eclipse-score/more-disk-space@v1
+        with:
+          level: 4
+      - uses: castler/setup-bazel@cache-optimized
+        with:
+          bazelisk-cache: true
+          disk-cache: unit_tests
+          repository-cache: true
+          cache-optimized: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build everything
+        run: bazel build --lockfile_mode=error //...
+      - name: Run unit and Starlark analysis tests
+        run: bazel test --lockfile_mode=error //score_coverage/... //tools/...
+      - name: Static analysis of the Python (ruff, pylint, ty; findings fail the build)
+        run: bazel build --lockfile_mode=error --config=lint //score_coverage/... //tools/...
+      - name: Measure structural coverage of the tool itself (coverage.py)
+        run: bazel coverage --lockfile_mode=error --combined_report=lcov //score_coverage/tests:all
+      - name: "Gate structural coverage (ratchet, raise as tests land; target 100/100)"
+        run: |
+          bazel run --lockfile_mode=error //tools:self_coverage_gate -- \
+            --min-lines 95 --min-branches 87 --summary-md "$GITHUB_STEP_SUMMARY"
+      - name: Ensure the lockfile is up to date
+        run: |
+          bazel mod deps --lockfile_mode=update
+          git diff --exit-code MODULE.bazel.lock
+      - name: Collect JUnit results for the documentation build
+        # docs-as-code links testcases to requirements from these files
+        # (tests-report/<bazel-testlogs path>/test.xml).
+        run: |
+          rm -rf tests-report && mkdir -p tests-report/score_coverage
+          rsync -amL --include='*/' --include='test.xml' --exclude='*' bazel-testlogs/score_coverage/ tests-report/score_coverage/
+          echo "collected $(find tests-report -name test.xml | wc -l) test.xml files"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tests-report
+          path: tests-report
+          if-no-files-found: error
+          retention-days: 3
+  integration_tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+      - name: Free Disk Space (Ubuntu)
+        uses: eclipse-score/more-disk-space@v1
+        with:
+          level: 4
+      - uses: castler/setup-bazel@cache-optimized
+        with:
+          bazelisk-cache: true
+          disk-cache: integration_tests
+          repository-cache: true
+          cache-optimized: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Run the end-to-end pipeline test (C++ + Rust consumer workspace)
+        run: integration_tests/run_integration_test.sh
+      - name: Upload coverage report of the integration workspace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration_coverage_report
+          path: integration_tests/coverage_artifact
+          if-no-files-found: ignore
+          retention-days: 10
+  docs:
+    needs: unit_tests
+    uses: eclipse-score/cicd-workflows/.github/workflows/docs.yml@93aac16ada7d247bbb6ae926509ddea74cf5213a # v0.0.2
+    permissions:
+      contents: write
+      pages: write
+      pull-requests: write
+      id-token: write
+    with:
+      # docs() lives in //docs (the root package must not load dev deps), so
+      # the output is docs/_build; the reusable workflow archives _build.
+      bazel-target: "//docs:docs && mv docs/_build _build"
+      tests-report-artifact: tests-report
+      retention-days: 3

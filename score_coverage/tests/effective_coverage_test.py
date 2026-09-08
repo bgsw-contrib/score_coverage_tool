@@ -1,0 +1,793 @@
+# *******************************************************************************
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************
+"""Unit tests for effective_coverage: arithmetic, llvm-cov HTML post-processing and the report."""
+# Test modules: docstrings on every test method add nothing, tests exercise
+# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
+# fixtures are attributes.
+# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
+# pylint: disable=too-many-instance-attributes
+
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+from score_coverage import effective_coverage as ec
+from score_coverage.tests.traceability import verifies
+
+
+def _row(line: int, status: str, count: str, code: str) -> str:
+    """One llvm-cov source table row in the exact shape the module parses."""
+    return (
+        f"<tr><td class='line-number'><a name='L{line}' href='#L{line}'><pre>{line}</pre></a></td>"
+        f"<td class='{status}'><pre>{count}</pre></td>"
+        f"<td class='code'><pre>{code}</pre></td></tr>\n"
+    )
+
+
+def _branch(line: int, col: int, true_covered: bool, false_covered: bool) -> str:
+    def side(name, covered):
+        if covered:
+            return f"<span class='None'>{name}</span>: <span class='covered-line'>3</span>"
+        return f"<span class='red branch'>{name}</span>: <span class='uncovered-line'>0</span>"
+
+    return (
+        f"Branch (<span class='line-number'><a name='L{line}' href='#L{line}'><span>{line}:{col}</span></a></span>): "
+        f"[{side('True', true_covered)}, {side('False', false_covered)}]\n"
+    )
+
+
+def _pct_cell(covered: int, total: int, color: str = "red") -> str:
+    pct = 100.0 * covered / total if total else 0.0
+    return f"<td class='column-entry-{color}'><pre>{pct:>7.2f}% ({covered}/{total})</pre></td>"
+
+
+def _index_page(files, totals) -> str:
+    """Minimal llvm-cov index.html: one row per (path, (fc, ft), (lc, lt), (bc, bt)) plus Totals."""
+    rows = []
+    for path, func, line, branch in files:
+        rows.append(
+            f"<tr class='light-row'><td><pre><a href='coverage/{path}.html'>{path}</a></pre></td>"
+            f"{_pct_cell(*func)}{_pct_cell(*line)}{_pct_cell(*branch)}</tr>\n"
+        )
+    func, line, branch = totals
+    rows.append(
+        "<tr class='light-row-bold'><td><pre>Totals</pre></td>"
+        f"{_pct_cell(*func)}{_pct_cell(*line)}{_pct_cell(*branch)}</tr>\n"
+    )
+    return "<html><body><h2>Coverage Report</h2><table>" + "".join(rows) + "</table></body></html>"
+
+
+@verifies("tool_req__coverage_eff_metric", derivation="boundary-values")
+class FloorTwoDecimalsTest(unittest.TestCase):
+    def test_never_rounds_up(self):
+        self.assertEqual(ec.floor_two_decimals(61.7647), 61.76)
+        self.assertEqual(ec.floor_two_decimals(99.999), 99.99)
+        self.assertEqual(ec.floor_two_decimals(100.0), 100.0)
+        self.assertEqual(ec.floor_two_decimals(0.0), 0.0)
+
+
+@verifies("tool_req__coverage_eff_metric")
+class ParseIndexPageTotalsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.html = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_reads_totals_row(self):
+        (self.html / "index.html").write_text(
+            _index_page([("src/a.cpp", (1, 2), (10, 20), (2, 4))], ((5, 6), (17, 34), (6, 10))), encoding="utf-8"
+        )
+        totals = ec.parse_index_page_totals(self.html)
+        self.assertEqual(totals["lines"], (17, 34))
+        self.assertEqual(totals["branches"], (6, 10))
+
+    def test_missing_index_yields_zero_totals_and_warns(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            totals = ec.parse_index_page_totals(self.html)
+        self.assertEqual(totals, {"lines": (0, 0), "branches": (0, 0)})
+        self.assertIn("WARNING", err.getvalue())
+
+    def test_unparseable_index_yields_zero_totals(self):
+        (self.html / "index.html").write_text("<html><body>nothing here</body></html>", encoding="utf-8")
+        with redirect_stderr(io.StringIO()):
+            totals = ec.parse_index_page_totals(self.html)
+        self.assertEqual(totals["lines"], (0, 0))
+
+
+@verifies("tool_req__coverage_eff_path_match")
+class PathHelpersTest(unittest.TestCase):
+    def test_extract_source_path(self):
+        html_dir = Path("/r/html")
+        self.assertEqual(
+            ec.extract_source_path_from_html(Path("/r/html/coverage/src/a.cpp.html"), html_dir), "src/a.cpp"
+        )
+        self.assertEqual(ec.extract_source_path_from_html(Path("/r/html/src/a.cpp.html"), html_dir), "src/a.cpp")
+        self.assertEqual(
+            ec.extract_source_path_from_html(Path("/r/html/coverage/home/u/ws/src/a.cpp.html"), html_dir),
+            "home/u/ws/src/a.cpp",
+        )
+
+    def test_find_source_html_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in [
+                "index.html",
+                "style.css",
+                "coverage/src/a.cpp.html",
+                "coverage/src/index.html",
+                "coverage/rust/lib.rs.html",
+            ]:
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("", encoding="utf-8")
+            found = [str(f.relative_to(root)) for f in ec.find_source_html_files(root)]
+        self.assertEqual(found, ["coverage/rust/lib.rs.html", "coverage/src/a.cpp.html"])
+
+
+@verifies("tool_req__coverage_eff_path_match", derivation="equivalence-classes")
+class FindMatchingJustificationsTest(unittest.TestCase):
+    JUSTIFIED = {
+        "src/bar.cpp": {"5": {"id": "bar-five"}},
+        "lib.rs": {"1": {"id": "lib-one"}},
+    }
+
+    def test_exact_and_component_suffix_match(self):
+        self.assertEqual(ec.find_matching_justifications("src/bar.cpp", self.JUSTIFIED), {5: {"id": "bar-five"}})
+        self.assertEqual(
+            ec.find_matching_justifications("home/u/ws/src/bar.cpp", self.JUSTIFIED), {5: {"id": "bar-five"}}
+        )
+        self.assertEqual(ec.find_matching_justifications("rust/lib.rs", self.JUSTIFIED), {1: {"id": "lib-one"}})
+
+    def test_shorter_html_path_matches_at_component_boundary(self):
+        self.assertEqual(ec.find_matching_justifications("bar.cpp", self.JUSTIFIED), {5: {"id": "bar-five"}})
+
+    def test_partial_basename_does_not_match(self):
+        # A justification for bar.cpp must never leak into foobar.cpp (would inflate effective coverage).
+        self.assertEqual(ec.find_matching_justifications("src/foobar.cpp", self.JUSTIFIED), {})
+        self.assertEqual(ec.find_matching_justifications("mylib.rs", self.JUSTIFIED), {})
+        self.assertEqual(ec.find_matching_justifications("other/xsrc/bar.cpp", self.JUSTIFIED), {})
+
+    def test_line_keys_become_integers(self):
+        result = ec.find_matching_justifications("src/bar.cpp", self.JUSTIFIED)
+        self.assertEqual(list(result), [5])
+
+
+@verifies("tool_req__coverage_eff_stale", "tool_req__coverage_eff_branch_only", "tool_req__coverage_eff_html")
+class ProcessHtmlFileTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.html = Path(self.tmp.name) / "a.cpp.html"
+        self.applied = []
+        self.stale = []
+        self.j = {"id": "j-1", "category": "other", "reason": 'it\'s "fine"'}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _process(self, content, justifications):
+        self.html.write_text(content, encoding="utf-8")
+        stats = ec.process_html_file(self.html, justifications, self.applied, self.stale)
+        return stats, self.html.read_text(encoding="utf-8")
+
+    def test_no_justifications_leaves_file_untouched(self):
+        content = _row(1, "uncovered-line", "0", "x")
+        stats, after = self._process(content, {})
+        self.assertEqual(stats, {"justified": 0, "stale": 0, "justified_branches": 0})
+        self.assertEqual(after, content)
+
+    def test_uncovered_justified_line_is_counted_and_restyled(self):
+        content = _row(1, "covered-line", "3", "a") + _row(
+            2, "uncovered-line", "0", "<span class='region red'>b</span>"
+        )
+        stats, after = self._process(content, {2: self.j})
+        self.assertEqual(stats["justified"], 1)
+        self.assertEqual(stats["stale"], 0)
+        self.assertIn(
+            "<td class='justified-line' title='Justified [j-1]: it&#39;s &quot;fine&quot;'><pre>J</pre></td>", after
+        )
+        self.assertIn("class='region justified'", after)
+        self.assertNotIn("class='region red'", after)
+        self.assertEqual(self.applied, [{"file": "a.cpp", "line": 2, "id": "j-1", "category": "other"}])
+        # Line 1 is untouched.
+        self.assertIn(_row(1, "covered-line", "3", "a"), after)
+
+    def test_covered_justified_line_is_stale(self):
+        content = _row(4, "covered-line", "2", "a")
+        stats, after = self._process(content, {4: self.j})
+        self.assertEqual(stats["stale"], 1)
+        self.assertEqual(stats["justified"], 0)
+        self.assertEqual(after, content)
+        self.assertEqual(self.stale[0]["line"], 4)
+        self.assertEqual(self.stale[0]["id"], "j-1")
+
+    def test_justified_line_not_in_file_is_ignored(self):
+        content = _row(1, "uncovered-line", "0", "x")
+        stats, _ = self._process(content, {99: self.j})
+        self.assertEqual(stats, {"justified": 0, "stale": 0, "justified_branches": 0})
+        self.assertEqual(self.applied, [])
+        self.assertEqual(self.stale, [])
+
+    def test_covered_in_any_instantiation_counts_as_covered(self):
+        content = _row(3, "uncovered-line", "0", "t") + _row(3, "covered-line", "1", "t")
+        stats, _ = self._process(content, {3: self.j})
+        self.assertEqual(stats["stale"], 1)
+        self.assertEqual(stats["justified"], 0)
+
+    def test_uncovered_branch_on_justified_line(self):
+        content = _row(5, "covered-line", "3", "if (x)") + _branch(5, 9, True, False)
+        stats, after = self._process(content, {5: self.j})
+        self.assertEqual(stats["justified_branches"], 1)
+        self.assertEqual(stats["stale"], 0)
+        self.assertEqual(stats["justified"], 0)  # the line itself is covered
+        self.assertIn("class='justified-branch'>False</span>: <span class='justified-line'>0</span>", after)
+        self.assertEqual(len(self.applied), 1)
+
+    def test_branch_covered_in_one_instantiation_is_not_justified(self):
+        content = _row(5, "covered-line", "3", "if (x)") + _branch(5, 9, True, False) + _branch(5, 9, True, True)
+        stats, _ = self._process(content, {5: self.j})
+        self.assertEqual(stats["justified_branches"], 0)
+        self.assertEqual(stats["stale"], 1)  # covered line, no truly uncovered branch: nothing left to justify
+
+    def test_both_directions_uncovered_count_two_branches(self):
+        content = _row(5, "uncovered-line", "0", "if (x)") + _branch(5, 9, False, False)
+        stats, _ = self._process(content, {5: self.j})
+        self.assertEqual(stats["justified"], 1)
+        self.assertEqual(stats["justified_branches"], 2)
+
+    def test_branches_on_unjustified_lines_untouched(self):
+        content = _row(5, "covered-line", "3", "if (x)") + _branch(5, 9, True, False)
+        stats, after = self._process(content, {7: self.j})
+        self.assertEqual(stats["justified_branches"], 0)
+        self.assertIn("class='red branch'>False</span>", after)
+
+
+@verifies("tool_req__coverage_eff_html")
+class UpdateIndexPageTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.html = Path(self.tmp.name)
+        (self.html / "index.html").write_text(
+            _index_page(
+                [("src/a.cpp", (1, 2), (5, 10), (1, 4)), ("src/b.cpp", (2, 2), (10, 10), (4, 4))],
+                ((3, 4), (15, 20), (5, 8)),
+            ),
+            encoding="utf-8",
+        )
+        (self.html / "style.css").write_text("body {}\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_banner_per_file_and_totals_updated(self):
+        stats = {
+            "total_instrumented_lines": 20,
+            "covered_lines": 15,
+            "justified_lines": 3,
+            "unjustified_uncovered_lines": 2,
+            "raw_line_coverage_pct": 75.0,
+            "effective_line_coverage_pct": 90.0,
+            "total_branches": 8,
+            "covered_branches": 5,
+            "justified_branches": 1,
+            "raw_branch_coverage_pct": 62.5,
+            "effective_branch_coverage_pct": 75.0,
+        }
+        ec.update_index_page(self.html, stats, {"src/a.cpp": {"justified": 3, "stale": 0, "justified_branches": 1}})
+        content = (self.html / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Effective Line Coverage: 90.0%", content)
+        self.assertIn("Effective Branch Coverage: 75.0%", content)
+        # per-file row: 5+3 of 10 lines, 1+1 of 4 branches
+        self.assertIn("<td class='column-entry-yellow'><pre>  80.00% (8/10)</pre></td>", content)
+        self.assertIn("<td class='column-entry-red'><pre>  50.00% (2/4)</pre></td>", content)
+        # totals row uses the stats' effective numbers
+        self.assertIn("<td class='column-entry-yellow'><pre>  90.00% (18/20)</pre></td>", content)
+        self.assertIn("<td class='column-entry-red'><pre>  75.00% (6/8)</pre></td>", content)
+        # untouched file keeps its cell
+        self.assertIn(_pct_cell(10, 10), content)
+
+    def test_css_injection(self):
+        ec.inject_justified_css(self.html)
+        css = (self.html / "style.css").read_text(encoding="utf-8")
+        self.assertTrue(css.startswith("body {}\n"))
+        self.assertIn(".justified-line", css)
+        self.assertIn(".justified-branch", css)
+
+    def test_color_thresholds(self):
+        self.assertEqual(ec._get_coverage_color(100.0), "green")
+        self.assertEqual(ec._get_coverage_color(99.99), "yellow")
+        self.assertEqual(ec._get_coverage_color(80.0), "yellow")
+        self.assertEqual(ec._get_coverage_color(79.99), "red")
+
+
+@verifies("tool_req__coverage_eff_metric", "tool_req__coverage_eff_stale", "tool_req__coverage_eff_html")
+class MainLlvmCovTest(unittest.TestCase):
+    """End-to-end on a synthetic llvm-cov report: report.json, summary.txt and HTML edits."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.html = root / "html_report"
+        (self.html / "coverage" / "src").mkdir(parents=True)
+        (self.html / "index.html").write_text(
+            _index_page([("src/a.cpp", (1, 1), (3, 5), (1, 2))], ((1, 1), (3, 5), (1, 2))), encoding="utf-8"
+        )
+        (self.html / "style.css").write_text("body {}\n", encoding="utf-8")
+        (self.html / "coverage" / "src" / "a.cpp.html").write_text(
+            _row(1, "covered-line", "1", "a")
+            + _row(2, "covered-line", "1", "b")
+            + _row(3, "covered-line", "1", "c")
+            + _row(4, "uncovered-line", "0", "<span class='region red'>d</span>")
+            + _row(5, "uncovered-line", "0", "<span class='region red'>e</span>"),
+            encoding="utf-8",
+        )
+        self.manifest = root / "manifest.json"
+        self.report = root / "just" / "report.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, justified_files):
+        self.manifest.write_text(json.dumps({"version": 1, "justified_files": justified_files}), encoding="utf-8")
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            ec.main(["--html-dir", str(self.html), "--manifest", str(self.manifest), "--output", str(self.report)])
+        return json.loads(self.report.read_text(encoding="utf-8"))
+
+    def test_one_justified_line(self):
+        report = self._run({"src/a.cpp": {"4": {"id": "j-4", "category": "other", "reason": "r"}}})
+        s = report["summary"]
+        self.assertEqual((s["total_instrumented_lines"], s["covered_lines"], s["justified_lines"]), (5, 3, 1))
+        self.assertEqual(s["unjustified_uncovered_lines"], 1)
+        self.assertEqual(s["raw_line_coverage_pct"], 60.0)
+        self.assertEqual(s["effective_line_coverage_pct"], 80.0)
+        self.assertEqual(s["total_branches"], 2)
+        self.assertEqual(report["applied_justifications"][0]["line"], 4)
+        self.assertEqual(report["stale_justifications"], [])
+        summary = (self.report.parent / "summary.txt").read_text(encoding="utf-8")
+        self.assertIn("Justified lines:          1", summary)
+        self.assertIn("Raw line coverage:        60.0%", summary)
+        self.assertIn("Effective line coverage:  80.0%", summary)
+        index = (self.html / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Effective Line Coverage: 80.0%", index)
+        self.assertIn("(4/5)", index)
+        self.assertIn(".justified-line", (self.html / "style.css").read_text(encoding="utf-8"))
+        page = (self.html / "coverage" / "src" / "a.cpp.html").read_text(encoding="utf-8")
+        self.assertIn("<pre>J</pre>", page)
+
+    def test_no_justifications_effective_equals_raw(self):
+        report = self._run({})
+        s = report["summary"]
+        self.assertEqual(s["justified_lines"], 0)
+        self.assertEqual(s["effective_line_coverage_pct"], s["raw_line_coverage_pct"])
+
+    def test_stale_justification_is_reported_not_counted(self):
+        report = self._run({"src/a.cpp": {"1": {"id": "stale-1", "category": "other", "reason": "r"}}})
+        s = report["summary"]
+        self.assertEqual(s["justified_lines"], 0)
+        self.assertEqual(s["stale_justifications"], 1)
+        self.assertEqual(s["effective_line_coverage_pct"], 60.0)
+        self.assertEqual(report["stale_justifications"][0]["id"], "stale-1")
+        summary = (self.report.parent / "summary.txt").read_text(encoding="utf-8")
+        self.assertIn("Stale justifications (1):", summary)
+
+    def test_justification_for_other_file_does_not_apply(self):
+        report = self._run({"src/foo_a.cpp": {"4": {"id": "x", "category": "other", "reason": "r"}}})
+        self.assertEqual(report["summary"]["justified_lines"], 0)
+
+    def test_effective_coverage_is_floored(self):
+        # 3 covered + 1 justified of 5 = 80.0 exactly; use 4/5 -> 3 covered of 5 = 60.0; craft 2/3 case instead
+        (self.html / "index.html").write_text(
+            _index_page([("src/a.cpp", (1, 1), (1, 3), (0, 0))], ((1, 1), (1, 3), (0, 0))), encoding="utf-8"
+        )
+        report = self._run({"src/a.cpp": {"4": {"id": "j", "category": "other", "reason": "r"}}})
+        s = report["summary"]
+        self.assertEqual(s["raw_line_coverage_pct"], 33.33)
+        self.assertEqual(s["effective_line_coverage_pct"], 66.66)  # 66.666.. floored, never 66.67
+
+    def test_missing_manifest_exits(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ec.main(
+                [
+                    "--html-dir",
+                    str(self.html),
+                    "--manifest",
+                    str(self.manifest / "nope"),
+                    "--output",
+                    str(self.report),
+                ]
+            )
+
+    def test_missing_html_dir_exits(self):
+        self.manifest.write_text(json.dumps({"justified_files": {}}), encoding="utf-8")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ec.main(
+                [
+                    "--html-dir",
+                    str(self.html / "missing"),
+                    "--manifest",
+                    str(self.manifest),
+                    "--output",
+                    str(self.report),
+                ]
+            )
+
+
+@verifies("tool_req__coverage_eff_gcovr")
+class FormatDetectionAndLcovTest(unittest.TestCase):
+    def test_detect_html_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "index.html").write_text("", encoding="utf-8")
+            self.assertEqual(ec.detect_html_format(root), "llvm_cov")
+            (root / "index.a_cpp.0123abcd.html").write_text("", encoding="utf-8")
+            self.assertEqual(ec.detect_html_format(root), "gcovr")
+
+    def test_parse_lcov_totals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lcov = Path(tmp) / "lcov.dat"
+            lcov.write_text(
+                "SF:a\nLF:10\nLH:4\nBRF:6\nBRH:2\nend_of_record\nSF:b\nLF:5\nLH:5\nend_of_record\n", encoding="utf-8"
+            )
+            totals = ec._parse_lcov_totals(lcov)
+        self.assertEqual(totals, {"lines": (9, 15), "branches": (2, 6)})
+
+
+# ---------------------------------------------------------------------------
+# gcovr backend (QNX path). The fixtures reproduce the markup gcovr 8.6 emits
+# for lcov_to_html.py's --html-details output, taken from a real report of the
+# integration workspace.
+# ---------------------------------------------------------------------------
+
+
+def _gcovr_index(lines=(20, 0, 34), functions=(4, 0, 7), branches=(6, 0, 10), with_summary=True) -> str:
+    def row(label, triple):
+        e, x, t = triple
+        pct = f"{100.0 * e / t:.1f}%" if t else "-%"
+        return (
+            f'      <tr>\n        <th scope="row">{label}:</th>\n'
+            f'        <td class="coverage-low">{pct}</td>\n'
+            f'        <td class="coverage-low">{e} / {x} / {t}</td>\n      </tr>\n'
+        )
+
+    summary = ""
+    if with_summary:
+        summary = (
+            '<div id="summary" class="summary">\n  <div>\n    <table class="legend">\n'
+            '      <tr><th scope="row">Directory:</th><td>./</td></tr>\n    </table>\n  </div>\n  <div>\n'
+            '    <table class="legend">\n      <tr>\n        <th></th>\n        <th scope="col">Coverage</th>\n'
+            '        <th scope="col">Exec / Excl / Total</th>\n      </tr>\n'
+            + row("Lines", lines)
+            + row("Functions", functions)
+            + row("Branches", branches)
+            + "    </table>\n  </div>\n</div>\n"
+        )
+    return (
+        "<!DOCTYPE html>\n<html>\n<body>\n<header>\n" + summary + "</header>\n"
+        '<div class="Box m-3 border">\n  <div class="Box-row Box-row--focus-gray py-2 d-flex">\n'
+        '    <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2 file-list '
+        'coverage-medium" data-sort="75.0">\n'
+        '      <span>75.0%</span>\n      <span title="Exec / Excl / Total">12 / 0 / 16</span>\n'
+        "    </div>\n  </div>\n</div>\n"
+        "</body>\n</html>\n"
+    )
+
+
+def _gcovr_row(line: int, status: str, count: str, code: str, branches=None) -> str:
+    """One gcovr source row. ``branches`` is a list of (taken: bool) per branch direction."""
+    if branches:
+        taken = sum(1 for b in branches if b)
+        details = (
+            '          <details class="linebranchDetails">\n'
+            f'            <summary class="linebranchSummary">{taken}/{len(branches)}</summary>\n'
+            '            <div class="linebranchContents">\n'
+        )
+        for i, ok in enumerate(branches):
+            if ok:
+                details += (
+                    f'              <div class="takenBranch">&check; Branch 0 &rightarrow; {i} taken 1 time.</div>\n'
+                )
+            else:
+                details += (
+                    f'              <div class="notTakenBranch">&cross; Branch 0 &rightarrow; {i} not taken.</div>\n'
+                )
+        details += "            </div>\n          </details>\n"
+    else:
+        details = ""
+    return (
+        '      <tr class="source-line">\n'
+        f'        <td class="lineno"><a id="l{line}" href="#l{line}">{line}</a></td>\n'
+        f'        <td class="linebranch">\n{details}        </td>\n'
+        f'        <td class="linecount {status} show_{status}">{count}</td>\n'
+        f'        <td class="src  {status} show_{status}">{code}</td>\n'
+        "      </tr>\n"
+    )
+
+
+def _gcovr_source_page(path: str, rows: str, directory: str = "./") -> str:
+    return (
+        "<!DOCTYPE html>\n<html>\n<head><title>GCC Code Coverage Report</title></head>\n<body>\n"
+        '<table class="legend">\n      <tr>\n        <th scope="row">Directory:</th>\n'
+        f"        <td>{directory}</td>\n      </tr>\n</table>\n"
+        '<div class="Box m-3">\n  <div class="Box-header py-2 d-flex sticky">\n'
+        '    <div role="rowheader" class="color-fg-muted flex-auto min-width-0 col-md-2">Function (File:Line)</div>\n'
+        "  </div>\n</div>\n"
+        '<div class="Box m-3">\n  <div class="Box-header d-flex flex-space-between sticky">\n'
+        f"    {path}\n"
+        '    <div class="toggle-buttons"></div>\n  </div>\n'
+        '  <table class="source-table">\n' + rows + "  </table>\n</div>\n</body>\n</html>\n"
+    )
+
+
+COVERABLE_ROWS = (
+    _gcovr_row(17, "coveredLine", "2", "const char* classify(int value) {")
+    + _gcovr_row(18, "coveredLine", "2", "if (value &lt; 0) {", branches=[True, True])
+    + _gcovr_row(19, "coveredLine", "1", 'return "negative";')
+    + _gcovr_row(20, "coveredLine", "1", "}")
+    + _gcovr_row(21, "coveredLine", "1", "if (value == 0) {", branches=[True, False])
+    + _gcovr_row(22, "coveredLine", "1", 'return "zero";')
+    + _gcovr_row(23, "coveredLine", "1", "}")
+    + _gcovr_row(24, "uncoveredLine", "&cross;", 'return "positive";  // COV_JUSTIFIED itest-positive-branch')
+    + _gcovr_row(25, "coveredLine", "1", "}")
+)
+
+
+class GcovrFixtureMixin:
+    def _make_gcovr_report(self, with_summary=True):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.html = Path(self.tmp.name) / "cpp_coverage_qnx"
+        self.html.mkdir()
+        (self.html / "index.html").write_text(_gcovr_index(with_summary=with_summary), encoding="utf-8")
+        (self.html / "index.css").write_text("body { color: black; }\n", encoding="utf-8")
+        (self.html / "index.js").write_text("// js\n", encoding="utf-8")
+        (self.html / "index.functions.html").write_text("<html>functions</html>", encoding="utf-8")
+        self.page = self.html / "index.coverable.cpp.adc3e3ccca5ac003a7efea58a6f0e095.html"
+        self.page.write_text(_gcovr_source_page("src/coverable.cpp", COVERABLE_ROWS), encoding="utf-8")
+        self.uncovered = self.html / "index.uncovered.cpp.e4ac329bbb251afd99e0ac248d5dd32f.html"
+        self.uncovered.write_text(
+            _gcovr_source_page(
+                "src/uncovered.cpp",
+                _gcovr_row(17, "uncoveredLine", "&cross;", "int never_called(int value) {")
+                + _gcovr_row(18, "uncoveredLine", "&cross;", "if (value &gt; 10) {", branches=[False, False]),
+            ),
+            encoding="utf-8",
+        )
+
+
+@verifies("tool_req__coverage_eff_gcovr")
+class GcovrDetectionAndParsingTest(GcovrFixtureMixin, unittest.TestCase):
+    def setUp(self):
+        self._make_gcovr_report()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_format_detected_by_per_source_naming(self):
+        self.assertEqual(ec.detect_html_format(self.html), "gcovr")
+
+    def test_source_files_skip_index_and_functions_pages(self):
+        names = [p.name for p in ec._find_gcovr_source_files(self.html)]
+        self.assertEqual(names, [self.page.name, self.uncovered.name])
+
+    def test_source_path_from_directory_and_header(self):
+        self.assertEqual(ec._extract_gcovr_source_path(self.page), "./src/coverable.cpp")
+
+    def test_source_path_falls_back_to_title(self):
+        page = self.html / "index.x.cpp.0123.html"
+        page.write_text(
+            "<html><head><title>x.cpp - GCC Code Coverage Report</title></head><body></body></html>", encoding="utf-8"
+        )
+        self.assertEqual(ec._extract_gcovr_source_path(page), "x.cpp")
+        self.assertEqual(ec._extract_gcovr_source_path(self.html / "missing.html"), "")
+
+    def test_index_totals_from_exec_excl_total_rows(self):
+        totals = ec._parse_gcovr_index_totals(self.html)
+        self.assertEqual(totals, {"lines": (20, 34), "branches": (6, 10)})
+
+    def test_index_totals_without_summary_block(self):
+        (self.html / "index.html").write_text(_gcovr_index(with_summary=False), encoding="utf-8")
+        totals = ec._parse_gcovr_index_totals(self.html)
+        # Fallback heuristics see the "12 / 0 / 16" file row: whatever they yield must not be
+        # a plausible-looking wrong total; the LCOV route (--lcov) is authoritative.
+        self.assertIn(totals["lines"][1], (0, 16))
+
+    def test_index_totals_missing_index(self):
+        (self.html / "index.html").unlink()
+        self.assertEqual(ec._parse_gcovr_index_totals(self.html), {"lines": (0, 0), "branches": (0, 0)})
+
+    def test_matching_ignores_leading_dot_slash(self):
+        result = ec.find_matching_justifications("./src/coverable.cpp", {"src/coverable.cpp": {"24": {"id": "j"}}})
+        self.assertEqual(list(result), [24])
+
+
+@verifies("tool_req__coverage_eff_gcovr", "tool_req__coverage_eff_stale", "tool_req__coverage_eff_branch_only")
+class ProcessGcovrFileTest(GcovrFixtureMixin, unittest.TestCase):
+    def setUp(self):
+        self._make_gcovr_report()
+        self.applied = []
+        self.stale = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _j(self, jid):
+        return {"id": jid, "category": "other", "reason": "r"}
+
+    def test_uncovered_line_is_justified_and_restyled(self):
+        before = self.page.read_text(encoding="utf-8")
+        stats = ec._process_gcovr_file(self.page, {24: self._j("pos")}, self.applied, self.stale)
+        self.assertEqual(stats, {"justified": 1, "stale": 0, "justified_branches": 0})
+        after = self.page.read_text(encoding="utf-8")
+        self.assertNotEqual(before, after)
+        self.assertIn('<td class="linecount justifiedLine show_justifiedLine">&cross;</td>', after)
+        self.assertIn('<td class="src  justifiedLine show_justifiedLine">', after)
+        self.assertEqual(after.count("uncoveredLine"), 0)
+        self.assertEqual(self.applied, [{"file": "./src/coverable.cpp", "line": 24, "id": "pos", "category": "other"}])
+
+    def test_covered_line_without_branch_gap_is_stale(self):
+        stats = ec._process_gcovr_file(self.page, {19: self._j("stale")}, self.applied, self.stale)
+        self.assertEqual(stats["stale"], 1)
+        self.assertEqual(self.stale[0]["line"], 19)
+        self.assertEqual(self.stale[0]["file"], "./src/coverable.cpp")
+
+    def test_not_taken_branch_makes_justification_branch_only(self):
+        stats = ec._process_gcovr_file(self.page, {21: self._j("br")}, self.applied, self.stale)
+        self.assertEqual(stats, {"justified": 0, "stale": 0, "justified_branches": 1})
+        self.assertEqual(self.applied[0]["line"], 21)
+
+    def test_fully_taken_branch_line_is_stale(self):
+        stats = ec._process_gcovr_file(self.page, {18: self._j("x")}, self.applied, self.stale)
+        self.assertEqual(stats["stale"], 1)
+
+    def test_partial_covered_line_class(self):
+        page = self.html / "index.p.cpp.0000.html"
+        page.write_text(
+            _gcovr_source_page("p.cpp", _gcovr_row(5, "partialCoveredLine", "1", "if (a || b)")), encoding="utf-8"
+        )
+        stats = ec._process_gcovr_file(page, {5: self._j("p")}, self.applied, self.stale)
+        self.assertEqual(stats["justified_branches"], 1)
+
+    def test_no_justifications_leaves_page_untouched(self):
+        before = self.page.read_text(encoding="utf-8")
+        stats = ec._process_gcovr_file(self.page, {}, self.applied, self.stale)
+        self.assertEqual(stats, {"justified": 0, "stale": 0, "justified_branches": 0})
+        self.assertEqual(self.page.read_text(encoding="utf-8"), before)
+
+    def test_unknown_line_is_ignored(self):
+        stats = ec._process_gcovr_file(self.page, {99: self._j("nope")}, self.applied, self.stale)
+        self.assertEqual(stats, {"justified": 0, "stale": 0, "justified_branches": 0})
+        self.assertEqual((self.applied, self.stale), ([], []))
+
+    def test_only_the_named_line_is_marked(self):
+        ec._process_gcovr_file(self.uncovered, {18: self._j("u")}, self.applied, self.stale)
+        after = self.uncovered.read_text(encoding="utf-8")
+        self.assertIn('id="l17"', after)
+        # line 17 stays uncovered, line 18 is justified
+        row17 = after[after.index('id="l17"') : after.index('id="l18"')]
+        row18 = after[after.index('id="l18"') :]
+        self.assertIn("uncoveredLine", row17)
+        self.assertNotIn("justifiedLine", row17)
+        self.assertIn("justifiedLine", row18)
+
+
+@verifies("tool_req__coverage_eff_gcovr", "tool_req__coverage_eff_html")
+class GcovrIndexAndCssTest(GcovrFixtureMixin, unittest.TestCase):
+    def setUp(self):
+        self._make_gcovr_report()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_css_injected_into_first_stylesheet(self):
+        ec._inject_gcovr_justified_css(self.html)
+        css = (self.html / "index.css").read_text(encoding="utf-8")
+        self.assertTrue(css.startswith("body { color: black; }\n"))
+        self.assertIn(".justifiedLine", css)
+        (self.html / "index.css").unlink()
+        ec._inject_gcovr_justified_css(self.html)  # no stylesheet: no-op
+
+    def test_banner_inserted_before_file_list(self):
+        stats = {
+            "effective_line_coverage_pct": 64.7,
+            "raw_line_coverage_pct": 58.82,
+            "justified_lines": 2,
+            "unjustified_uncovered_lines": 12,
+            "justified_branches": 1,
+            "effective_branch_coverage_pct": 70.0,
+            "raw_branch_coverage_pct": 60.0,
+        }
+        ec._update_gcovr_index_page(self.html, stats)
+        content = (self.html / "index.html").read_text(encoding="utf-8")
+        banner_at = content.index("Effective Line Coverage: 64.7%")
+        self.assertLess(banner_at, content.index('<div class="Box m-3'))
+        self.assertIn("Effective Branch Coverage: 70.0%", content)
+        (self.html / "index.html").unlink()
+        ec._update_gcovr_index_page(self.html, stats)  # missing index: no-op
+
+
+@verifies("tool_req__coverage_eff_gcovr", "tool_req__coverage_eff_metric")
+class MainGcovrTest(GcovrFixtureMixin, unittest.TestCase):
+    """End-to-end through main(): the gcovr backend must produce the same two output files."""
+
+    def setUp(self):
+        self._make_gcovr_report()
+        root = Path(self.tmp.name)
+        self.manifest = root / "manifest.json"
+        self.report = root / "just" / "report.json"
+        self.lcov = root / "lcov.dat"
+        self.lcov.write_text(
+            "SF:src/coverable.cpp\nLF:9\nLH:8\nBRF:4\nBRH:3\nend_of_record\n"
+            "SF:src/uncovered.cpp\nLF:6\nLH:0\nBRF:2\nBRH:0\nend_of_record\n"
+            "SF:rust/lib.rs\nLF:16\nLH:12\nBRF:4\nBRH:3\nend_of_record\n"
+            "SF:rust/main.rs\nLF:3\nLH:0\nBRF:0\nBRH:0\nend_of_record\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, justified_files, with_lcov):
+        self.manifest.write_text(json.dumps({"version": 1, "justified_files": justified_files}), encoding="utf-8")
+        argv = ["--html-dir", str(self.html), "--manifest", str(self.manifest), "--output", str(self.report)]
+        if with_lcov:
+            argv += ["--lcov", str(self.lcov)]
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            ec.main(argv)
+        return json.loads(self.report.read_text(encoding="utf-8"))
+
+    JUST = {
+        "src/coverable.cpp": {
+            "24": {"id": "pos", "category": "other", "reason": "r"},
+            "21": {"id": "br", "category": "other", "reason": "b"},
+            "19": {"id": "stale", "category": "other", "reason": "s"},
+        },
+        "src/uncovered.cpp": {"18": {"id": "u18", "category": "other", "reason": "u"}},
+    }
+
+    def test_totals_from_lcov(self):
+        report = self._run(self.JUST, with_lcov=True)
+        s = report["summary"]
+        self.assertEqual((s["total_instrumented_lines"], s["covered_lines"]), (34, 20))
+        self.assertEqual(s["justified_lines"], 2)  # line 24 and uncovered.cpp:18
+        self.assertEqual(s["justified_branches"], 1)  # line 21
+        self.assertEqual(s["stale_justifications"], 1)
+        self.assertEqual(s["raw_line_coverage_pct"], 58.82)
+        self.assertEqual(s["effective_line_coverage_pct"], 64.7)  # 22/34 floored
+        self.assertEqual(s["total_branches"], 10)
+        self.assertEqual(s["effective_branch_coverage_pct"], 70.0)
+        # Both output files exist, like the llvm-cov backend.
+        summary = (self.report.parent / "summary.txt").read_text(encoding="utf-8")
+        self.assertIn("Effective line coverage:  64.7%", summary)
+        self.assertIn("Stale justifications (1):", summary)
+        self.assertIn("Effective Line Coverage: 64.7%", (self.html / "index.html").read_text(encoding="utf-8"))
+        self.assertIn(".justifiedLine", (self.html / "index.css").read_text(encoding="utf-8"))
+
+    def test_totals_from_index_page_when_no_lcov(self):
+        report = self._run(self.JUST, with_lcov=False)
+        s = report["summary"]
+        self.assertEqual((s["total_instrumented_lines"], s["covered_lines"]), (34, 20))
+        self.assertEqual(s["effective_line_coverage_pct"], 64.7)
+
+    def test_no_justifications(self):
+        report = self._run({}, with_lcov=True)
+        s = report["summary"]
+        self.assertEqual(s["justified_lines"], 0)
+        self.assertEqual(s["effective_line_coverage_pct"], s["raw_line_coverage_pct"])
+
+
+if __name__ == "__main__":
+    unittest.main()
