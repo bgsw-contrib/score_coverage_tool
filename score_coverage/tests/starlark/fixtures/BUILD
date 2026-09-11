@@ -78,3 +78,28 @@ rust_binary(
     tags = MANUAL,
     deps = [":rlib"],
 )
+
+# Header behind strip_include_prefix: the compiler (and the coverage mapping)
+# see it through the generated _virtual_includes/ tree.
+cc_library(
+    name = "vendored",
+    hdrs = ["vendor/include/vendored/api.h"],
+    strip_include_prefix = "vendor/include",
+    tags = MANUAL,
+)
+
+# A workspace target whose headers are vendored from an external module,
+# once behind strip_include_prefix (as //score/flatbuffers:flatbufferscpp in
+# baselibs) and once declared directly.
+cc_library(
+    name = "vendored_external",
+    hdrs = ["@coverage_external_fixture//:include/ext/ext.h"],
+    strip_include_prefix = "/include",
+    tags = MANUAL,
+)
+
+cc_library(
+    name = "vendored_external_plain",
+    hdrs = ["@coverage_external_fixture//:include/ext/ext.h"],
+    tags = MANUAL,
+)
