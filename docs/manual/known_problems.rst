@@ -56,14 +56,22 @@ stay listed with their upstream references.
      - Rust sources listed as ``not-instrumented`` in ``unmapped_files.txt``
        of a QNX report.
      - Measure Rust with the Linux (LLVM) run of the same tree.
-   * - **Vendored external headers have no data on the gcov backend.** Bazel's
-       per-test collector keeps only files of its instrumented-files manifest,
-       which never lists sources from external repositories, although gcov
-       itself recorded them.
-     - Such a header is ``no-data`` in a QNX report and measured in the Linux
-       report of the same tree.
-     - Known limitation of Bazel's collector; use the Linux report for those
-       headers.
+   * - **gcov discards test measurements when the instrumentation filter is
+       too narrow.** This affects source files and headers, including headers
+       imported from another repository. Bazel's gcov collector keeps only
+       measurements for files declared by targets included in
+       ``--instrumentation_filter``. Adding files to the coverage scope alone
+       is not enough. The tool's LLVM collector does not apply this additional
+       file filter, but both backends need instrumentation enabled at compile
+       time to produce measurements.
+     - Tests execute code in a file, but the gcov report shows no test data
+       for it, or only zero counts from the baseline.
+     - Make sure ``--instrumentation_filter`` includes the package of the
+       target declaring the affected files. For example, if
+       ``//third_party:headers`` declares imported
+       headers, a filter of ``^//score[/:]`` misses it. Use
+       ``--instrumentation_filter=^//`` to include all workspace packages,
+       or extend the narrower filter to include ``//third_party``.
    * - **gcov and LLVM count different lines.** gcov reports only lines the
        compiler emitted code for: unused inline functions and closing braces
        have no line, while LLVM's mapping keeps unused functions at 0 %.
@@ -123,3 +131,36 @@ stay listed with their upstream references.
        output.
      - Set ``--instrumentation_filter=^//<root>[/:]`` in every coverage
        config (user manual, step 4).
+   * - **Effective coverage can pass despite missing untested files.** If LLVM
+       cannot render HTML with the baseline archives, the reporter retries
+       using only test binaries. LCOV still includes baseline-only files, but
+       effective coverage uses the reduced HTML totals.
+     - Untested files appear in LCOV but are missing from HTML. Even an empty
+       justification YAML can change a failing raw result into a passing
+       effective result.
+     - Check that HTML includes the untested files listed in LCOV before
+       relying on the effective gate. Without justification YAML, the raw gate
+       uses LCOV and includes baseline-only files.
+       Tracked in `issue #14 <https://github.com/eclipse-score/coverage_tool/issues/14>`_.
+   * - **Missing effective-coverage totals can be treated as 0 %.** Missing or
+       unparseable HTML totals do not reliably produce an error.
+     - The command returns exit 1 instead of exit 2, or even exit 0 when the
+       threshold is 0, despite having no usable effective-coverage totals.
+     - Check that the HTML contains usable totals. The raw LCOV path rejects
+       zero measurable lines.
+       Tracked in `issue #15 <https://github.com/eclipse-score/coverage_tool/issues/15>`_.
+   * - **Malformed YAML can bypass the error-code handling.** A syntax error
+       in the justification YAML can terminate the command before it reports
+       the expected error status.
+     - A traceback and exit 1 instead of exit 2.
+     - Correct the YAML syntax; treat the traceback as a processing error,
+       rather than a failed coverage threshold.
+       Tracked in `issue #16 <https://github.com/eclipse-score/coverage_tool/issues/16>`_.
+   * - **The effective gate uses a floored percentage.** It reads the value
+       from ``report.json``, already floored to two decimal places. The raw
+       gate compares without display rounding.
+     - For example, effective coverage of 99.999 % becomes 99.99 % and fails
+       a threshold of 99.995 %.
+     - Account for the two-decimal precision when interpreting failures close
+       to the threshold. Both paths are intended to compare unrounded values.
+       Tracked in `issue #17 <https://github.com/eclipse-score/coverage_tool/issues/17>`_.
