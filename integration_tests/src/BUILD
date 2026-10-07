@@ -62,11 +62,45 @@ cc_library(
     strip_include_prefix = "vendored/include",
 )
 
+# Platform-dependent library: one source per variant, selected on the
+# platform of the build. The LLVM run (host platform) compiles and measures
+# platform_host.cpp, the gcov run (//platforms:gcov_target) platform_target.cpp.
+# The scope must list the variant of the run's platform, not the host's
+# (coverage_tool#23).
+cc_library(
+    name = "platform_dep",
+    srcs = select({
+        "//platforms:is_gcov_target": ["platform_target.cpp"],
+        "//conditions:default": ["platform_host.cpp"],
+    }),
+    hdrs = ["platform_dep.h"],
+)
+
+# One root per platform, selected in the SCOPE's deps (tools/coverage/BUILD),
+# the baselibs layout: the host root is incompatible with the gcov platform.
+# The select() must resolve for the scope's platform or the scope, the report
+# generator and every test become incompatible and bazel coverage silently
+# skips all tests (coverage_tool#23).
+cc_library(
+    name = "host_root",
+    srcs = ["host_root.cpp"],
+    target_compatible_with = select({
+        "//platforms:is_gcov_target": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_library(
+    name = "target_root",
+    srcs = ["target_root.cpp"],
+)
+
 cc_test(
     name = "coverable_test",
     srcs = ["coverable_test.cpp"],
     deps = [
         ":coverable",
+        ":platform_dep",
         ":vendored_math_internal",
         "//third_party:extlib",
         "//third_party:vendored_ext",

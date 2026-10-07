@@ -49,6 +49,58 @@ cc_library(
     tags = MANUAL,
 )
 
+# A platform-dependent library: the host (default) variant and the variant
+# selected on a fixture-only platform. coverage_scope(platform = ...) must
+# see the target variant although the scope is analysed in the exec
+# configuration (coverage_tool#23).
+constraint_setting(name = "fixture_flavour")
+
+constraint_value(
+    name = "fixture_target",
+    constraint_setting = ":fixture_flavour",
+)
+
+platform(
+    name = "target_platform",
+    constraint_values = [":fixture_target"],
+    parents = ["@platforms//host"],
+)
+
+config_setting(
+    name = "is_fixture_target",
+    constraint_values = [":fixture_target"],
+)
+
+# The baselibs pattern: one root per platform, selected in the SCOPE's deps,
+# where the host root is incompatible with the fixture platform. The select()
+# in the scope's deps must resolve for the scope's platform, or the scope
+# (and with it the report generator and every test) becomes incompatible.
+cc_library(
+    name = "host_root",
+    srcs = ["host_root.cpp"],
+    tags = MANUAL,
+    target_compatible_with = select({
+        ":is_fixture_target": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_library(
+    name = "target_root",
+    srcs = ["target_root.cpp"],
+    tags = MANUAL,
+)
+
+cc_library(
+    name = "platform_dep",
+    srcs = select({
+        ":is_fixture_target": ["target_only.cpp"],
+        "//conditions:default": ["host_only.cpp"],
+    }),
+    hdrs = ["platform_dep.h"],
+    tags = MANUAL,
+)
+
 # A generated source must NOT enter the allowlist (only checked-in sources
 # are coverage subjects).
 genrule(

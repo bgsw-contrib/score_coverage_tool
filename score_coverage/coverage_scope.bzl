@@ -277,16 +277,37 @@ def _coverage_scope_impl(ctx):
     ]
 
 def _coverage_transition_impl(settings, attr):
-    # This dictionary modifies the build configuration
+    """Build the scope's deps with coverage on, and for the declared target platform.
+
+    Bazel analyses ``--coverage_report_generator`` (and therefore the scope
+    it depends on) in the *exec* configuration, i.e. for the host platform.
+    Without ``platform`` every ``select()`` on the platform resolves for the
+    host, so a QNX run would list the Linux variants of platform-specific
+    code and miss the QNX variants (coverage_tool#23). ``platform`` pins the
+    configuration the scope is evaluated in.
+
+    The transition is applied to the rule itself (incoming edge), not only
+    to ``deps``: a ``select()`` in the ``deps`` attribute is resolved in the
+    configuration of the rule that owns the attribute, so a per-platform
+    root list would otherwise resolve for the host while the roots
+    themselves are built for the target platform.
+    """
+    platforms = settings["//command_line_option:platforms"]
+    if attr.platform:
+        platforms = [str(attr.platform)]
     return {
         "//command_line_option:collect_code_coverage": True,
+        "//command_line_option:platforms": platforms,
     }
 
 # Define the transition
 coverage_transition = transition(
     implementation = _coverage_transition_impl,
-    inputs = [],
-    outputs = ["//command_line_option:collect_code_coverage"],
+    inputs = ["//command_line_option:platforms"],
+    outputs = [
+        "//command_line_option:collect_code_coverage",
+        "//command_line_option:platforms",
+    ],
 )
 
 def _coverage_wrapper_impl(ctx):
@@ -323,13 +344,31 @@ coverage_scope = rule(
     The coverage reporter restricts reporting to exactly the allowlisted
     files, reports headers behind include prefixes under their declared path,
     and stages the sources so every HTML page can be rendered.
+
+    ``platform`` names the target platform the scope is evaluated for. Bazel
+    analyses the coverage report generator, and with it this rule, in the
+    exec configuration; without ``platform`` every ``select()`` on the
+    platform resolves for the host. A scope for a QNX run therefore sets
+    ``platform`` to the QNX platform label, so that platform-specific
+    sources, baseline objects and gcno notes are those of QNX. A root that
+    is incompatible with the platform fails the analysis: platform-only
+    roots belong behind a ``select()`` in ``deps``.
     """,
+    cfg = coverage_transition,
     attrs = {
         "deps": attr.label_list(
             mandatory = True,
             aspects = [_coverage_scope_aspect],
-            cfg = coverage_transition,
-            doc = "Implementation targets whose transitive deps define the coverage scope.",
+            doc = "Implementation targets whose transitive deps define the coverage scope. " +
+                  "A select() here is resolved for ``platform`` as well.",
+        ),
+        "platform": attr.label(
+            default = None,
+            doc = "Target platform the scope is evaluated for (``--platforms`` of the coverage run). " +
+                  "Unset: the platform of the exec configuration, i.e. the host.",
+        ),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
     },
 )

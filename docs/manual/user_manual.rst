@@ -159,6 +159,73 @@ report. The scope list is the written record of what is covered: a production
 library missing from it silently vanishes from the report, so every new
 library must be added, and exclusions need a written decision.
 
+.. _scope_platform:
+
+**The scope is evaluated for a platform.** Bazel analyses the coverage report
+generator, and with it the scope, in the exec configuration, that is for the
+host platform, whatever ``--platforms`` the coverage run uses. On the Linux
+run host and target coincide. For a run that targets another platform the
+scope must say so, otherwise every ``select()`` on the platform resolves for
+the host: the Linux variants of platform-specific code appear at 0 % and the
+target's variants are missing. Declare one scope per platform:
+
+.. code-block:: starlark
+
+   score_coverage_scope(
+       name = "coverage_scope_qnx",
+       testonly = True,
+       platform = "@score_bazel_platforms//:x86_64-qnx-sdp_8.0.0-posix",
+       tags = ["manual"],  # see below
+       deps = SCOPE_DEPS,
+   )
+
+``platform`` is the label the run passes as ``--platforms``. Roots that exist
+on one platform only must sit behind a ``select()`` in ``deps``; that
+``select()`` is resolved for ``platform`` too, because the transition applies
+to the scope rule itself, not only to its dependencies. A root that
+is incompatible with the platform makes the scope incompatible, and that
+does **not** fail the coverage run: every test depends on the report
+generator and inherits the incompatibility, so Bazel skips all tests
+(``Executed 0 out of N tests: N were skipped``) and no report is written.
+Build the scope explicitly to get the dependency chain to the offending
+constraint:
+
+.. code-block:: shell
+
+   bazel build --config=<your QNX build config> --collect_code_coverage //tools/coverage:coverage_scope_qnx
+
+On a Linux host without the QNX SDP the same analysis runs in seconds with
+a stand-in: lend the host's GCC ``cc_toolchain`` to the QNX platform in a
+scratch package (not committed) and pass it together with the QNX Rust
+toolchain. Incompatibility and visibility are decided by constraints and
+labels, not by the compiler, so the chain Bazel prints is the real one.
+
+.. code-block:: starlark
+
+   toolchain(
+       name = "fake_qnx_cc",
+       target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:qnx"],
+       toolchain = "@score_gcc_x86_64_toolchain//:cc_toolchain",
+       toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+   )
+
+.. code-block:: shell
+
+   bazel build --nobuild --collect_code_coverage \
+       --platforms=@score_bazel_platforms//:x86_64-qnx-sdp_8.0.0-posix \
+       --extra_toolchains=//scratch:fake_qnx_cc \
+       --extra_toolchains=@score_toolchains_rust//toolchains/ferrocene:ferrocene_x86_64_pc_nto_qnx800 \
+       //tools/coverage:coverage_scope_qnx
+
+Rust roots are the usual culprits on QNX: crate_universe marks crates
+incompatible with platforms outside rules_rust's triple list, and the gcov
+backend cannot measure Rust anyway, so keep Rust roots out of a QNX scope.
+Tag such a scope ``manual``, like the gcov reporter: a wildcard ``bazel build //...``
+on a Linux host would otherwise analyse it for the other platform in a
+configuration where that platform's toolchains are not registered and fail
+toolchain resolution. The coverage run names the reporter, and through it
+the scope, explicitly, so the tag does not affect it.
+
 Step 4: import the bazelrc config
 ---------------------------------
 
@@ -216,7 +283,7 @@ the toolchain extension):
        name = "gcov_reporter_wrapper",
        testonly = True,
        backend = "gcov",
-       coverage_scope = ":coverage_scope",
+       coverage_scope = ":coverage_scope_qnx",  # platform = the QNX platform, see step 3
        gcov = "@score_qcc_x86_64_toolchain_pkg//:gcov",
        tags = ["manual"],  # keeps `bazel build //...` on a Linux host from fetching the QNX SDP
    )
