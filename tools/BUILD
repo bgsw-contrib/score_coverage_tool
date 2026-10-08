@@ -13,9 +13,8 @@
 
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@score_tooling//:defs.bzl", "copyright_checker", "dash_license_checker")
-load("@score_tooling//third_party/format:macros.bzl", "use_format_targets")
 
-# Repository hygiene (copyright headers, formatting). Kept out of the root
+# Repository hygiene (copyright headers). Kept out of the root
 # package on purpose: these load from dev dependencies, which consumers of
 # @score_coverage do not have.
 
@@ -38,15 +37,6 @@ copyright_checker(
     template = "@score_tooling//cr_checker/resources:templates",
     visibility = ["//visibility:public"],
 )
-
-# C++ and Rust exist only as fixtures inside the nested tests/end_to_end/consumer
-# workspace, which has its own toolchains; the main module holds Python,
-# Starlark and YAML.
-use_format_targets(languages = [
-    "python",
-    "starlark",
-    "yaml",
-])
 
 # Structural coverage of this repository's own Python (coverage.py via
 # `bazel coverage --combined_report=lcov //tests/unit/score_coverage:all`).
