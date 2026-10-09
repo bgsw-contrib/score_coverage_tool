@@ -11,7 +11,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 
+load("@aspect_rules_py//py:defs.bzl", "py_venv")
+load("@pip_score_coverage_dev//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 load("@score_tooling//:defs.bzl", "copyright_checker", "dash_license_checker")
 load("@score_tooling//third_party/format:macros.bzl", "use_format_targets")
 
@@ -47,6 +50,29 @@ use_format_targets(languages = [
     "starlark",
     "yaml",
 ])
+
+compile_pip_requirements(
+    name = "requirements_3_12",
+    src = "requirements.in",
+    python_version = "3.12",
+    requirements_txt = "requirements_3_12.txt",
+    tags = ["manual"],
+)
+
+py_venv(
+    name = "ide_support",
+    tags = ["manual"],
+    venv_name = ".venv_coverage",
+    deps = [
+        "//score_coverage:coverage_summary_lib",
+        "//score_coverage:effective_coverage_lib",
+        "//score_coverage:gcov_reporter_lib",
+        "//score_coverage:generate_coverage_html_lib",
+        "//score_coverage:merger_lib",
+        "@score_tools//score_pytest:attribute_plugin",
+        requirement("basedpyright"),
+    ],
+)
 
 # Structural coverage of this repository's own Python (coverage.py via
 # `bazel coverage --combined_report=lcov //score_coverage/tests:all`).

@@ -69,9 +69,17 @@ Exit codes: `0` gate passed, `1` gate failed, `2` no verdict possible.
 
 ```bash
 bazel test //score_coverage/... //tools/...          # unit + analysis tests
-bazel build --config=lint //score_coverage/... //tools/...   # ruff, pylint, ty
+bazel build --config=lint //score_coverage/... //tools/...   # ruff, ty
+bazel run //tools:ide_support                       # create .venv_coverage with Bazel dependencies
+.venv_coverage/bin/python3 -m basedpyright            # whole-project type check; warnings also fail
 bazel coverage --combined_report=lcov //score_coverage/tests:all
 bazel run //tools:self_coverage_gate -- --min-lines 95 --min-branches 87
 integration_tests/run_integration_test.sh            # end-to-end (downloads LLVM + Ferrocene)
 bazel run //tools:format.fix && bazel run //tools:copyright.check
 ```
+
+Basedpyright follows docs-as-code's standard-mode policy and checks implementation
+and test code under `score_coverage/` and `tools/`. Its dependencies are development-only,
+pinned separately in `tools/requirements_3_12.txt`; update them with
+`bazel run //tools:requirements_3_12.update`. Production code retains private-access
+checks; tests that deliberately exercise private helpers disable only that rule.

@@ -57,7 +57,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -265,7 +265,7 @@ def run_justifications(
     return effective_line_coverage_from_report(report)
 
 
-def _call_tool(name: str, entry, argv: list[str]) -> None:
+def _call_tool(name: str, entry: Callable[[list[str]], None], argv: list[str]) -> None:
     try:
         entry(argv)
     except SystemExit as exc:
@@ -307,7 +307,7 @@ def report_unmapped_files(unmapped: Path) -> int:
     """
     if not unmapped.is_file():
         return 0
-    names = []
+    names: list[str] = []
     for line in unmapped.read_text(encoding="utf-8").splitlines():
         category, tab, name = line.strip().partition("\t")
         if not tab:
@@ -360,7 +360,7 @@ def assemble_artifacts(
 # -----------------------------------------------------------------------------
 
 
-def run(opts: Options, workspace: Path, environ: dict | None = None) -> int:
+def run(opts: Options, workspace: Path, environ: Mapping[str, str] | None = None) -> int:
     """Execute the full flow from ``workspace`` and return the exit code."""
     env = os.environ if environ is None else environ
     threshold = parse_threshold(env.get("COVERAGE_THRESHOLD"))

@@ -11,11 +11,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 """Tests for the repository's own coverage gate."""
-# Test modules: docstrings on every test method add nothing, tests exercise
-# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
-# fixtures are attributes.
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
 
 import io
 import tempfile
@@ -79,7 +74,7 @@ class ParseLcovTest(unittest.TestCase):
 
 
 class EvaluateTest(unittest.TestCase):
-    def _totals(self, lh, lf, bh, bf):
+    def _totals(self, lh: int, lf: int, bh: int, bf: int) -> gate.Totals:
         return gate.Totals(files=[gate.FileCoverage("score_coverage/x.py", lf, lh, bf, bh)])
 
     def test_pass_and_fail(self):
@@ -102,7 +97,7 @@ class MainTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _main(self, argv):
+    def _main(self, argv: list[str]) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             rc = gate.main(argv)

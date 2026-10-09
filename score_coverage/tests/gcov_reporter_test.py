@@ -12,9 +12,6 @@
 # *******************************************************************************
 """Unit tests for the gcov backend reporter (GCC on Linux, QCC on QNX)."""
 
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
-
 import io
 import os
 import stat
@@ -23,6 +20,7 @@ import unittest
 import zipfile
 from contextlib import redirect_stderr
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from score_coverage import gcov_reporter
@@ -64,16 +62,16 @@ end_of_record
 
 
 class _FakeRunfiles:
-    def __init__(self, mapping):
+    def __init__(self, mapping: dict[str, str]) -> None:
         self.mapping = mapping
 
-    def Rlocation(self, path):  # noqa: N802  # pylint: disable=invalid-name
+    def Rlocation(self, path: str) -> str | None:  # noqa: N802
         if os.path.isabs(path):
             return path
         return self.mapping.get(path)
 
 
-GCOV_JSON = {
+GCOV_JSON: dict[str, Any] = {
     "format_version": "1",
     "gcc_version": "12.2.0",
     "current_working_directory": "/proc/self/cwd",
@@ -105,7 +103,7 @@ GCOV_JSON = {
 }
 
 
-def _fake_gcov(path: Path, payload: dict) -> Path:
+def _fake_gcov(path: Path, payload: dict[str, Any]) -> Path:
     path.write_text(
         "#!/usr/bin/env python3\nimport json, sys\n"
         "sys.stderr.write('x.gcda:cannot open data file, assuming not executed\\n')\n"
@@ -386,7 +384,7 @@ class GcovReporterMainTest(unittest.TestCase):
         os.chdir(self.cwd)
         self.tmp.cleanup()
 
-    def _argv(self, **extra):
+    def _argv(self, **extra: object) -> list[str]:
         argv = [
             "--output_file",
             str(self.output),

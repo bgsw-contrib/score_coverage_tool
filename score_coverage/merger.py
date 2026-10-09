@@ -161,7 +161,7 @@ def get_object_files_from_manifest(source_file_manifest: Path) -> set[str]:
         sys.exit(1)
     exec_root = Path(root)
 
-    object_files = set()
+    object_files: set[str] = set()
     with open(source_file_manifest, encoding="utf-8") as f:
         manifests = [line.strip() for line in f.readlines()]
 
@@ -204,7 +204,7 @@ def is_elf(path: Path) -> bool:
         return False
 
 
-def run_command(cmd: list[str]) -> subprocess.CompletedProcess:
+def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a command and exit on failure."""
     try:
         return subprocess.run(

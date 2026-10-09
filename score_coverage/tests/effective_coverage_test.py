@@ -11,11 +11,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 """Unit tests for effective_coverage: arithmetic, llvm-cov HTML post-processing and the report."""
-# Test modules: docstrings on every test method add nothing, tests exercise
-# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
-# fixtures are attributes.
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
+# pyright: reportPrivateUsage=false
 
 import io
 import json
@@ -23,6 +19,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 
 from score_coverage import effective_coverage as ec
 from score_coverage.tests.traceability import verifies
@@ -38,7 +35,7 @@ def _row(line: int, status: str, count: str, code: str) -> str:
 
 
 def _branch(line: int, col: int, true_covered: bool, false_covered: bool) -> str:
-    def side(name, covered):
+    def side(name: str, covered: bool) -> str:
         if covered:
             return f"<span class='None'>{name}</span>: <span class='covered-line'>3</span>"
         return f"<span class='red branch'>{name}</span>: <span class='uncovered-line'>0</span>"
@@ -54,7 +51,10 @@ def _pct_cell(covered: int, total: int, color: str = "red") -> str:
     return f"<td class='column-entry-{color}'><pre>{pct:>7.2f}% ({covered}/{total})</pre></td>"
 
 
-def _index_page(files, totals) -> str:
+def _index_page(
+    files: list[tuple[str, tuple[int, int], tuple[int, int], tuple[int, int]]],
+    totals: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+) -> str:
     """Minimal llvm-cov index.html: one row per (path, (fc, ft), (lc, lt), (bc, bt)) plus Totals."""
     rows = []
     for path, func, line, branch in files:
@@ -180,7 +180,7 @@ class ProcessHtmlFileTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _process(self, content, justifications):
+    def _process(self, content: str, justifications: dict[int, dict[str, str]]) -> tuple[dict[str, int], str]:
         self.html.write_text(content, encoding="utf-8")
         stats = ec.process_html_file(self.html, justifications, self.applied, self.stale)
         return stats, self.html.read_text(encoding="utf-8")
@@ -342,7 +342,7 @@ class MainLlvmCovTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run(self, justified_files):
+    def _run(self, justified_files: dict[str, dict[str, dict[str, str]]]) -> dict[str, Any]:
         self.manifest.write_text(json.dumps({"version": 1, "justified_files": justified_files}), encoding="utf-8")
         with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
             ec.main(["--html-dir", str(self.html), "--manifest", str(self.manifest), "--output", str(self.report)])
@@ -454,8 +454,13 @@ class FormatDetectionAndLcovTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def _gcovr_index(lines=(20, 0, 34), functions=(4, 0, 7), branches=(6, 0, 10), with_summary=True) -> str:
-    def row(label, triple):
+def _gcovr_index(
+    lines: tuple[int, int, int] = (20, 0, 34),
+    functions: tuple[int, int, int] = (4, 0, 7),
+    branches: tuple[int, int, int] = (6, 0, 10),
+    with_summary: bool = True,
+) -> str:
+    def row(label: str, triple: tuple[int, int, int]) -> str:
         e, x, t = triple
         pct = f"{100.0 * e / t:.1f}%" if t else "-%"
         return (
@@ -487,7 +492,7 @@ def _gcovr_index(lines=(20, 0, 34), functions=(4, 0, 7), branches=(6, 0, 10), wi
     )
 
 
-def _gcovr_row(line: int, status: str, count: str, code: str, branches=None) -> str:
+def _gcovr_row(line: int, status: str, count: str, code: str, branches: list[bool] | None = None) -> str:
     """One gcovr source row. ``branches`` is a list of (taken: bool) per branch direction."""
     if branches:
         taken = sum(1 for b in branches if b)
@@ -547,7 +552,7 @@ COVERABLE_ROWS = (
 
 
 class GcovrFixtureMixin:
-    def _make_gcovr_report(self, with_summary=True):
+    def _make_gcovr_report(self, with_summary: bool = True) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.html = Path(self.tmp.name) / "cpp_coverage_qnx"
         self.html.mkdir()
@@ -624,7 +629,7 @@ class ProcessGcovrFileTest(GcovrFixtureMixin, unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _j(self, jid):
+    def _j(self, jid: str) -> dict[str, str]:
         return {"id": jid, "category": "other", "reason": "r"}
 
     def test_uncovered_line_is_justified_and_restyled(self):
@@ -765,7 +770,7 @@ class MainGcovrTest(GcovrFixtureMixin, unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run(self, justified_files, with_lcov):
+    def _run(self, justified_files: dict[str, dict[str, dict[str, str]]], with_lcov: bool) -> dict[str, Any]:
         self.manifest.write_text(json.dumps({"version": 1, "justified_files": justified_files}), encoding="utf-8")
         argv = ["--html-dir", str(self.html), "--manifest", str(self.manifest), "--output", str(self.report)]
         if with_lcov:

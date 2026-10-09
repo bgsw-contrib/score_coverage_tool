@@ -132,7 +132,7 @@ def _write_manifest(
     errors: list[str],
 ) -> None:
     """Write the manifest consumed by effective_coverage (line keys as strings, files sorted)."""
-    manifest = {
+    manifest: dict[str, Any] = {
         "version": 1,
         "source_root": str(source_root),
         "justified_files": {
@@ -172,7 +172,7 @@ def scan_file_for_markers(
     justifications_by_id: dict[str, dict[str, Any]],
 ) -> tuple[list[str], dict[int, dict[str, str]]]:
     """Scan a source file for COV_JUSTIFIED markers."""
-    warnings = []
+    warnings: list[str] = []
     justified_lines: dict[int, dict[str, str]] = {}
 
     try:
@@ -264,7 +264,7 @@ def validate_yaml(data: Any) -> None:
     """Validate the justification YAML structure and types; exit(1) with all findings on failure."""
     try:
         errors = _validate_document(data)
-    except Exception as error:  # pylint: disable=broad-exception-caught
+    except Exception as error:
         # Any malformed shape must end in a validation failure, never in a traceback.
         print(f"ERROR: YAML validation: {error}", file=sys.stderr)
         sys.exit(1)
@@ -278,6 +278,7 @@ def _validate_document(data: Any) -> list[str]:
     """Return all validation errors of the document (empty when valid)."""
     if not isinstance(data, dict):
         return ["root must be a mapping"]
+    data = cast(dict[str, Any], data)
     errors: list[str] = []
     if "version" not in data:
         errors.append("Missing 'version' field")
@@ -286,7 +287,7 @@ def _validate_document(data: Any) -> list[str]:
     if "justifications" not in data:
         errors.append("Missing 'justifications' field")
         return errors
-    justifications = data["justifications"]
+    justifications: list[Any] = data["justifications"]
     if not isinstance(justifications, list):
         errors.append(f"'justifications' must be a list, got {type(justifications).__name__}")
         return errors
@@ -300,6 +301,7 @@ def _validate_entry(prefix: str, entry: Any, seen_ids: set[str]) -> list[str]:
     """Validate one justification entry."""
     if not isinstance(entry, dict):
         return [f"{prefix}: must be a mapping, got {type(entry).__name__}"]
+    entry = cast(dict[str, Any], entry)
     if "id" not in entry:
         return [f"{prefix}: missing 'id'"]
     jid = entry["id"]
@@ -335,7 +337,7 @@ def _validate_platforms(prefix: str, entry: dict[str, Any]) -> list[str]:
     """``platforms``: a non-empty list of known platform names."""
     if "platforms" not in entry:
         return [f"{prefix}: missing 'platforms'"]
-    platforms = entry["platforms"]
+    platforms: list[Any] = entry["platforms"]
     if not isinstance(platforms, list):
         return [f"{prefix}: 'platforms' must be a list, got {type(platforms).__name__}"]
     if not platforms:
@@ -366,7 +368,7 @@ def _validate_locations(prefix: str, locations: Any) -> list[str]:
     if not isinstance(locations, list):
         return [f"{prefix}: 'locations' must be a list, got {type(locations).__name__}"]
     errors: list[str] = []
-    for j, loc in enumerate(locations):
+    for j, loc in enumerate(cast(list[Any], locations)):
         loc_prefix = f"{prefix}.locations[{j}]"
         if not isinstance(loc, dict):
             errors.append(f"{loc_prefix}: must be a mapping, got {type(loc).__name__}")
@@ -384,7 +386,7 @@ def _validate_locations(prefix: str, locations: Any) -> list[str]:
         if "lines" in loc:
             if not isinstance(loc_map["lines"], list):
                 errors.append(f"{loc_prefix}: 'lines' must be a list, got {type(loc_map['lines']).__name__}")
-            elif not all(isinstance(ln, int) for ln in loc_map["lines"]):
+            elif not all(isinstance(ln, int) for ln in cast(list[Any], loc_map["lines"])):
                 errors.append(f"{loc_prefix}: 'lines' must contain only integers")
     return errors
 

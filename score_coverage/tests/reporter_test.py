@@ -12,11 +12,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 """Unit tests for the final coverage reporter."""
-# Test modules: docstrings on every test method add nothing, tests exercise
-# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
-# fixtures are attributes.
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
+# pyright: reportPrivateUsage=false
 
 import io
 import json
@@ -27,6 +23,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from collections.abc import Iterable
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
@@ -48,7 +45,7 @@ def _ar_header(name: str, size: int) -> bytes:
     return (f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{size:<10}`\n").encode()
 
 
-def _make_archive(members) -> bytes:
+def _make_archive(members: Iterable[tuple[str, bytes]]) -> bytes:
     """Build a Unix ar archive from (name, data) tuples."""
     blob = b"!<arch>\n"
     for name, data in members:
@@ -58,11 +55,11 @@ def _make_archive(members) -> bytes:
     return blob
 
 
-def _make_elf(section_names) -> bytes:
+def _make_elf(section_names: Iterable[str]) -> bytes:
     """Build a minimal ELF64 relocatable object whose section table names ``section_names``."""
     names = [".shstrtab"] + list(section_names)
     strtab = b"\x00"
-    name_offsets = []
+    name_offsets: list[int] = []
     for name in names:
         name_offsets.append(len(strtab))
         strtab += name.encode() + b"\x00"
@@ -91,7 +88,7 @@ def _make_elf(section_names) -> bytes:
     blob = header + strtab
     blob += b"\x00" * (shoff - len(blob))
 
-    def shdr(name_off, offset, size):
+    def shdr(name_off: int, offset: int, size: int) -> bytes:
         return (
             name_off.to_bytes(4, "little")
             + (1).to_bytes(4, "little")  # SHT_PROGBITS
@@ -161,7 +158,9 @@ class ObjectHasCovmapTest(unittest.TestCase):
 class ExpandBaselineArchivesTest(unittest.TestCase):
     """llvm-cov gets only archive members that carry a coverage mapping."""
 
-    def _expand(self, tmp, name, members, short_path=None):
+    def _expand(
+        self, tmp: str, name: str, members: Iterable[tuple[str, bytes]], short_path: str | None = None
+    ) -> tuple[tuple[list[str], set[str]], Path]:
         archive = Path(tmp) / name
         archive.write_bytes(_make_archive(members))
         manifest = {str(archive): short_path or f"pkg/{name}"}
@@ -310,10 +309,10 @@ class WriteEmptyOutputTest(unittest.TestCase):
 class _FakeRunfiles:
     """Minimal stand-in for python.runfiles.Runfiles: maps rlocation paths to files."""
 
-    def __init__(self, mapping):
+    def __init__(self, mapping: dict[str, str]) -> None:
         self.mapping = mapping
 
-    def Rlocation(self, path):  # noqa: N802  # pylint: disable=invalid-name
+    def Rlocation(self, path: str) -> str | None:  # noqa: N802
         if os.path.isabs(path):
             return path
         return self.mapping.get(path)
@@ -410,7 +409,7 @@ class ExtractReportsTest(unittest.TestCase):
         os.chdir(self.cwd)
         self.tmp.cleanup()
 
-    def _zip(self, name, meta=None, profdata=b"PROF"):
+    def _zip(self, name: str, meta: object = None, profdata: bytes | None = b"PROF") -> str:
         path = self.root / name
         with zipfile.ZipFile(path, "w") as zf:
             if meta is not None:
@@ -679,7 +678,7 @@ class ReporterMainTest(unittest.TestCase):
         os.chdir(self.cwd)
         self.tmp.cleanup()
 
-    def _argv(self, **extra):
+    def _argv(self, **extra: object) -> list[str]:
         argv = [
             "--output_file",
             str(self.output),
@@ -937,7 +936,7 @@ class ForeignVirtualIncludesTest(unittest.TestCase):
 class ExclusionRegexTest(unittest.TestCase):
     """--ignore-filename-regex must hit exactly one compiled file."""
 
-    def _matches(self, regex, filename):
+    def _matches(self, regex: str, filename: str) -> bool:
         # llvm-cov uses POSIX ERE; the pattern must not need Python-only syntax.
         self.assertNotIn("(?", regex)
         return re.search(regex, filename) is not None
@@ -1122,7 +1121,7 @@ class RelocateHtmlPagesTest(unittest.TestCase):
 
     ROOT = "/tmp/work/sources"
 
-    def _page(self, html_dir, rel, depth):
+    def _page(self, html_dir: Path, rel: str, depth: int) -> Path:
         page = html_dir / "coverage" / self.ROOT.strip("/") / (rel + ".html")
         page.parent.mkdir(parents=True, exist_ok=True)
         up = "../" * depth

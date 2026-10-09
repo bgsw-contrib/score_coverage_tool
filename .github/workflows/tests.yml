@@ -46,8 +46,12 @@ jobs:
         run: bazel build --lockfile_mode=error //...
       - name: Run unit and Starlark analysis tests
         run: bazel test --lockfile_mode=error --test_tag_filters=-integration //score_coverage/... //tools/...
-      - name: Static analysis of the Python (ruff, pylint, ty; findings fail the build)
+      - name: Static analysis of the Python (ruff, ty; findings fail the build)
         run: bazel build --lockfile_mode=error --config=lint //score_coverage/... //tools/...
+      - name: Type check the Python (basedpyright; errors and warnings fail)
+        run: |
+          bazel run --lockfile_mode=error //tools:ide_support
+          .venv_coverage/bin/python3 -m basedpyright
       - name: Measure structural coverage of the tool itself (coverage.py)
         run: bazel coverage --lockfile_mode=error --combined_report=lcov //score_coverage/tests:all
       - name: "Gate structural coverage (ratchet, raise as tests land; target 100/100)"

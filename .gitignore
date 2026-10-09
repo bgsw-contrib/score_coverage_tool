@@ -10,6 +10,7 @@ user.bazelrc
 
 __pycache__
 .ruff_cache/
+.venv_coverage/
 
 # Outputs of integration_tests/run_integration_test.sh
 integration_tests/coverage_artifacts.zip

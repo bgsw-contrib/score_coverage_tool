@@ -37,6 +37,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from python.runfiles import Runfiles
 
@@ -406,7 +407,7 @@ def gcov_baseline(gcov_path: Path, gcno: str) -> dict[str, FileRecord]:
     return records_from_gcov_json(data)
 
 
-def records_from_gcov_json(data: dict) -> dict[str, FileRecord]:
+def records_from_gcov_json(data: dict[str, Any]) -> dict[str, FileRecord]:
     """Convert gcov's JSON intermediate format into records (counts as reported)."""
     records: dict[str, FileRecord] = {}
     for entry in data.get("files", []):
@@ -433,12 +434,12 @@ def records_from_gcov_json(data: dict) -> dict[str, FileRecord]:
 # -----------------------------------------------------------------------------
 
 
-def gcovr_tracefile(records: dict[str, FileRecord]) -> dict:
+def gcovr_tracefile(records: dict[str, FileRecord]) -> dict[str, Any]:
     """The records as a gcovr JSON tracefile (format 0.14)."""
     files = []
     for name in sorted(records):
         rec = records[name]
-        by_line: dict[int, list[dict]] = defaultdict(list)
+        by_line: dict[int, list[dict[str, int | bool]]] = defaultdict(list)
         for (line, block, branch), count in sorted(rec.branches.items()):
             # gcovr's source page prints "block -> block" for every branch and
             # needs both ids; LCOV's block and branch numbers stand in for them.
@@ -483,7 +484,7 @@ def render_html(records: dict[str, FileRecord], source_root: Path, html_dir: Pat
         "--txt",
         str(summary),
     ]
-    from gcovr.__main__ import main as gcovr_main  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
+    from gcovr.__main__ import main as gcovr_main  # noqa: PLC0415
 
     saved_argv = sys.argv
     sys.argv = argv

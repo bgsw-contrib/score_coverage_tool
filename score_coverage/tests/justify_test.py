@@ -11,11 +11,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 """Unit tests for justify: YAML validation, marker scanning and manifest generation."""
-# Test modules: docstrings on every test method add nothing, tests exercise
-# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
-# fixtures are attributes.
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
+# pyright: reportPrivateUsage=false
 
 import io
 import json
@@ -23,11 +19,12 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from typing import Any
 
 from score_coverage import justify
 from score_coverage.tests.traceability import verifies
 
-VALID_ENTRY = {
+VALID_ENTRY: dict[str, Any] = {
     "id": "defensive-null-check",
     "category": "defensive_programming",
     "platforms": ["linux"],
@@ -35,13 +32,13 @@ VALID_ENTRY = {
 }
 
 
-def _valid_yaml(**overrides):
+def _valid_yaml(**overrides: object) -> dict[str, Any]:
     entry = dict(VALID_ENTRY)
     entry.update(overrides)
     return {"version": 1, "justifications": [entry]}
 
 
-def _validate(data):
+def _validate(data: object) -> int | str | None:
     """Run validate_yaml quietly; return None on success or the SystemExit code."""
     with redirect_stderr(io.StringIO()):
         try:
@@ -137,7 +134,7 @@ class ValidateYamlTest(unittest.TestCase):
 
     def test_all_errors_are_reported_together(self):
         err = io.StringIO()
-        entry = {"id": "Bad_Id", "category": "nope", "platforms": [], "reason": ""}
+        entry: dict[str, object] = {"id": "Bad_Id", "category": "nope", "platforms": [], "reason": ""}
         with redirect_stderr(err), self.assertRaises(SystemExit):
             justify.validate_yaml({"version": 1, "justifications": [entry]})
         text = err.getvalue()
@@ -185,7 +182,7 @@ class ScanFileForMarkersTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _scan(self, text):
+    def _scan(self, text: str) -> tuple[list[str], dict[int, dict[str, str]]]:
         path = self.root / "f.cpp"
         path.write_text(text, encoding="utf-8")
         return justify.scan_file_for_markers(path, "f.cpp", self.by_id)
@@ -270,7 +267,7 @@ class CollectSourceFilesTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _rel(self, files):
+    def _rel(self, files: list[Path]) -> list[str]:
         return sorted(str(f.relative_to(self.root)) for f in files)
 
     def test_default_filter_and_bazel_dirs_skipped(self):
@@ -350,7 +347,7 @@ class MainTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run(self, platform):
+    def _run(self, platform: str | None) -> tuple[int | str | None, dict[str, Any] | None, str]:
         argv = ["--yaml", str(self.yaml), "--source-root", str(self.root), "--output", str(self.out)]
         if platform:
             argv += ["--platform", platform]
@@ -367,6 +364,7 @@ class MainTest(unittest.TestCase):
     def test_linux_manifest(self):
         code, manifest, err = self._run("linux")
         self.assertIsNone(code)
+        assert manifest is not None
         self.assertEqual(manifest["version"], 1)
         self.assertEqual(manifest["source_root"], str(self.root))
         self.assertEqual(sorted(manifest["justified_files"]), ["src/a.cpp", "src/b.rs"])
@@ -386,11 +384,13 @@ class MainTest(unittest.TestCase):
     def test_qnx_manifest(self):
         code, manifest, _ = self._run("qnx")
         self.assertIsNone(code)
+        assert manifest is not None
         self.assertEqual(list(manifest["justified_files"]["src/a.cpp"]), ["3"])
 
     def test_no_platform_keeps_all(self):
         code, manifest, _ = self._run(None)
         self.assertIsNone(code)
+        assert manifest is not None
         self.assertEqual(sorted(manifest["justified_files"]["src/a.cpp"]), ["2", "3"])
 
     def test_missing_location_file_is_an_error(self):
@@ -402,6 +402,7 @@ class MainTest(unittest.TestCase):
         code, manifest, err = self._run("linux")
         self.assertEqual(code, 1)
         self.assertIn("File not found for justification 'gone'", err)
+        assert manifest is not None
         self.assertEqual(len(manifest["errors"]), 1)  # the manifest is still written for diagnosis
 
     def test_invalid_yaml_exits_before_scanning(self):
@@ -415,6 +416,7 @@ class MainTest(unittest.TestCase):
         (self.root / "bazel-out" / "gen.cpp").write_text("x // COV_JUSTIFIED marker-linux\n", encoding="utf-8")
         code, manifest, _ = self._run("linux")
         self.assertIsNone(code)
+        assert manifest is not None
         self.assertNotIn("bazel-out/gen.cpp", manifest["justified_files"])
 
 

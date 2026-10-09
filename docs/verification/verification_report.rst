@@ -163,8 +163,12 @@ Static analysis
 ---------------
 
 ruff (rule set of the S-CORE Python guideline: E, W, F, I, B, C90, UP, SIM,
-RET; McCabe ceiling 15), pylint and ty run as Bazel aspects with findings
-failing the build. Current state: zero findings. buildifier checks the Starlark,
+RET; McCabe ceiling 15) and ty run as Bazel aspects with findings
+failing the build. Basedpyright runs a whole-project type check of the implementation
+and tests using the dependencies provided by ``//tools:ide_support``. It uses
+standard mode with additional warnings following docs-as-code; both errors and
+warnings fail CI. Private-helper access is permitted only in tests that deliberately
+exercise it. Current state: zero findings. buildifier checks the Starlark,
 yamlfmt the workflows; copyright headers are checked on every file.
 
 End-to-end validation

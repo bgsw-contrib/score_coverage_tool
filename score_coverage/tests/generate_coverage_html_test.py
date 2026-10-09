@@ -17,17 +17,13 @@ reporter zip (html_report/ + lcov_report/lcov.dat) under
 bazel-out/_coverage/ and a fake bazel-testlogs tree. The justification tools
 are replaced by fakes where the HTML post-processing itself is out of scope.
 """
-# Test modules: docstrings on every test method add nothing, tests exercise
-# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
-# fixtures are attributes.
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
 
 import io
 import json
 import tempfile
 import unittest
 import zipfile
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -71,7 +67,7 @@ def _make_workspace(
     return root
 
 
-def _run(root: Path, argv, environ) -> tuple:
+def _run(root: Path, argv: Sequence[str], environ: Mapping[str, str]) -> tuple[int, str, str]:
     """Run the tool quietly, returning (rc, stdout, stderr)."""
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
@@ -150,7 +146,7 @@ class EffectiveLineCoverageTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _report(self, payload) -> Path:
+    def _report(self, payload: object) -> Path:
         return _write(self.root / "report.json", json.dumps(payload))
 
     def test_reads_summary_value(self):
@@ -166,13 +162,14 @@ class EffectiveLineCoverageTest(unittest.TestCase):
             gch.effective_line_coverage_from_report(self.root / "missing.json")
 
     def test_malformed_reports(self):
-        for payload in [
+        payloads: list[object] = [
             {},
             {"summary": {}},
             {"summary": {"effective_line_coverage_pct": "95"}},
             {"summary": {"effective_line_coverage_pct": None}},
             {"summary": {"effective_line_coverage_pct": True}},
-        ]:
+        ]
+        for payload in payloads:
             with self.subTest(payload=payload), self.assertRaises(gch.GenerateError):
                 gch.effective_line_coverage_from_report(self._report(payload))
         bad_json = _write(self.root / "report.json", "{not json")
@@ -407,13 +404,13 @@ class RunWithYamlTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = _make_workspace(Path(self.tmp.name))
         _write(self.root / "tools" / "coverage" / "coverage_justifications.yaml", "version: 1\njustifications: []\n")
-        self.calls = []
+        self.calls: list[tuple[str, list[str]]] = []
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _fake_effective(self, pct):
-        def fake(argv):
+    def _fake_effective(self, pct: float) -> Callable[[list[str]], None]:
+        def fake(argv: list[str]) -> None:
             self.calls.append(("effective_coverage", argv))
             output = Path(argv[argv.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -433,12 +430,12 @@ class RunWithYamlTest(unittest.TestCase):
 
         return fake
 
-    def _fake_justify(self, argv):
+    def _fake_justify(self, argv: list[str]) -> None:
         self.calls.append(("justify", argv))
         Path(argv[argv.index("--output") + 1]).parent.mkdir(parents=True, exist_ok=True)
         Path(argv[argv.index("--output") + 1]).write_text("{}", encoding="utf-8")
 
-    def _run_yaml(self, extra, environ, pct=90.0):
+    def _run_yaml(self, extra: list[str], environ: Mapping[str, str], pct: float = 90.0) -> tuple[int, str, str]:
         with (
             mock.patch.object(gch.justify, "main", side_effect=self._fake_justify),
             mock.patch.object(gch.effective_coverage, "main", side_effect=self._fake_effective(pct)),
@@ -471,14 +468,14 @@ class RunWithYamlTest(unittest.TestCase):
             justify_main.assert_not_called()
 
     def test_justify_failure_is_an_error_not_a_verdict(self):
-        def failing(argv):
+        def failing(argv: list[str]) -> None:
             raise SystemExit(1)
 
         with mock.patch.object(gch.justify, "main", side_effect=failing), self.assertRaises(gch.GenerateError):
             _run(self.root, ["--yaml", "tools/coverage/coverage_justifications.yaml"], {"COVERAGE_THRESHOLD": "0"})
 
     def test_missing_summary_is_an_error(self):
-        def no_summary(argv):
+        def no_summary(argv: list[str]) -> None:
             output = Path(argv[argv.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps({"summary": {"effective_line_coverage_pct": 99.0}}), encoding="utf-8")

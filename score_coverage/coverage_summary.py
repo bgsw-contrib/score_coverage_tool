@@ -31,6 +31,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, TypedDict, cast
 
 BAR_WIDTH = 10
 LEAST_COVERED_LIMIT = 15
@@ -164,7 +165,7 @@ def _int_suffix(line: str) -> int:
         return 0
 
 
-def load_justification_summary(path: Path) -> dict | None:
+def load_justification_summary(path: Path) -> dict[str, Any] | None:
     """Load the summary block of effective_coverage.py's report.json."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -172,7 +173,7 @@ def load_justification_summary(path: Path) -> dict | None:
     except (OSError, json.JSONDecodeError) as e:
         print(f"WARNING: could not read justification report {path}: {e}", file=sys.stderr)
         return None
-    summary = report.get("summary")
+    summary: dict[str, Any] = report.get("summary")
     if not isinstance(summary, dict):
         return None
     summary = dict(summary)
@@ -213,9 +214,17 @@ def directory_key(path: str) -> str:
     return "/".join(parts[:2])
 
 
-def rollup_by_directory(files: list[FileCoverage]) -> list[dict]:
+class _DirectoryCoverage(TypedDict):
+    directory: str
+    pct: float | None
+    lines_found: int
+    lines_hit: int
+    files: int
+
+
+def rollup_by_directory(files: list[FileCoverage]) -> list[_DirectoryCoverage]:
     """Aggregate per-file counters into one row per top-level directory."""
-    groups: dict[str, dict] = {}
+    groups: dict[str, dict[str, int]] = {}
     for fc in files:
         g = groups.setdefault(
             directory_key(fc.path),
@@ -224,11 +233,13 @@ def rollup_by_directory(files: list[FileCoverage]) -> list[dict]:
         g["lines_found"] += fc.lines_found
         g["lines_hit"] += fc.lines_hit
         g["files"] += 1
-    rows = [
+    rows: list[_DirectoryCoverage] = [
         {
             "directory": name,
             "pct": percent(g["lines_hit"], g["lines_found"]),
-            **g,
+            "lines_found": g["lines_found"],
+            "lines_hit": g["lines_hit"],
+            "files": g["files"],
         }
         for name, g in groups.items()
     ]
@@ -283,7 +294,7 @@ def _render_unmapped(unmapped: dict[str, list[str]]) -> list[str]:
 
 def render_markdown(
     files: list[FileCoverage],
-    justification: dict | None,
+    justification: dict[str, Any] | None,
     unmapped: dict[str, list[str]] | None = None,
 ) -> str:
     """Render the full markdown summary (totals, raw vs effective, rollup, 0 % files, unmapped files).
@@ -303,8 +314,8 @@ def render_markdown(
     total_lf = sum(f.lines_found for f in files)
     total_lh = sum(f.lines_hit for f in files)
     branch_files = [f for f in files if f.branches_found is not None]
-    total_brf = sum(f.branches_found for f in branch_files) if branch_files else 0
-    total_brh = sum(f.branches_hit for f in branch_files) if branch_files else 0
+    total_brf = sum(cast(int, f.branches_found) for f in branch_files) if branch_files else 0
+    total_brh = sum(cast(int, f.branches_hit) for f in branch_files) if branch_files else 0
     touched = [f for f in files if f.lines_hit > 0]
     zero = [f for f in files if f.lines_found > 0 and f.lines_hit == 0]
 

@@ -12,11 +12,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 """Unit tests for the markdown coverage summary."""
-# Test modules: docstrings on every test method add nothing, tests exercise
-# private helpers on purpose, TemporaryDirectory is closed in tearDown, and setUp
-# fixtures are attributes.
-# pylint: disable=missing-function-docstring,missing-class-docstring,protected-access,consider-using-with
-# pylint: disable=too-many-instance-attributes
 
 import io
 import json
@@ -136,7 +131,7 @@ class RollupTest(unittest.TestCase):
 
 @verifies("tool_req__coverage_summary_first")
 class RenderTest(unittest.TestCase):
-    def _render(self, justification=None):
+    def _render(self, justification: dict[str, int | float] | None = None) -> str:
         with tempfile.TemporaryDirectory() as tmp:
             files = parse_lcov(_write(tmp, "l.dat", LCOV_TWO_FILES))
             assert files is not None

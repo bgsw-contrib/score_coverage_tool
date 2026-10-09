@@ -40,7 +40,7 @@ from python.runfiles import Runfiles
 class RunfilesLike(Protocol):
     """The part of ``python.runfiles.Runfiles`` this module uses; tests provide fakes."""
 
-    def Rlocation(self, path: str) -> str | None:  # noqa: N802  # pylint: disable=invalid-name
+    def Rlocation(self, path: str) -> str | None:  # noqa: N802
         """Resolve a runfiles path to an absolute path, or None."""
 
 
@@ -455,7 +455,7 @@ def format_unmapped_files(selection: FileSelection) -> str:
 def resolve_source(runfiles: RunfilesLike, canonical: str, workspace_root: str) -> str | None:
     """Absolute path of an in-scope source: from the reporter's runfiles, else the workspace."""
     if canonical.startswith("external/"):
-        candidates = [runfiles.Rlocation(canonical[len("external/") :])]
+        candidates: list[str | None] = [runfiles.Rlocation(canonical[len("external/") :])]
     else:
         candidates = [runfiles.Rlocation(os.path.join("_main", canonical)), os.path.join(workspace_root, canonical)]
     for candidate in candidates:
@@ -609,7 +609,7 @@ def _make_html_paths_relative(html_dir: Path, source_root: str, path_map: dict[s
         return
     prefix = source_root if source_root.endswith("/") else source_root + "/"
 
-    def _repl(match: "re.Match") -> str:
+    def _repl(match: "re.Match[str]") -> str:
         title = match.group(2)
         for known in (prefix, "/proc/self/cwd/"):
             if title.startswith(known):
@@ -624,7 +624,7 @@ def _make_html_paths_relative(html_dir: Path, source_root: str, path_map: dict[s
             page.write_text(new_text, encoding="utf-8")
 
 
-def _filter_lcov(lcov_content: str, target_files: set) -> str:
+def _filter_lcov(lcov_content: str, target_files: set[str]) -> str:
     """Filter LCOV content to only include records for target files.
 
     LCOV format: SF:<path> starts a record, end_of_record ends it.
@@ -847,7 +847,7 @@ def run_llvm_cov_show(
     output_format: str,
     html_report_dir: Path | None = None,
     cxxfilt: str = "",
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     """Run llvm-cov show."""
     cmd = [
         str(llvm_bin_path),
@@ -887,7 +887,7 @@ def run_llvm_cov_export(
     instr_profile: str | None,
     filter_regexes: list[str],
     workspace_root: str,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     """Run llvm-cov export to produce LCOV format."""
     cmd = [
         str(llvm_bin_path),
@@ -918,7 +918,7 @@ def run_llvm_cov_report(
     instr_profile: str | None,
     filter_regexes: list[str],
     workspace_root: str,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     """Run llvm-cov report for a text summary."""
     cmd = [
         str(llvm_bin_path),
@@ -944,8 +944,8 @@ def run_llvm_cov_report(
 
 def extract_reports(reports: list[str]) -> tuple[set[str], set[str]]:
     """Extract profdata and object files from per-test zip files."""
-    valid_profdata_files = set()
-    valid_object_files = set()
+    valid_profdata_files: set[str] = set()
+    valid_object_files: set[str] = set()
 
     for i, report_path in enumerate(reports):
         # Skip baseline_coverage files (LCOV format, not our zip).
@@ -994,17 +994,17 @@ def read_reports_file(reports_file: Path) -> list[str]:
         return [line.strip() for line in f if line.strip()]
 
 
-def _read_ar_members(path: str) -> list[tuple]:
+def _read_ar_members(path: str) -> list[tuple[str, int, int]]:
     """Parse a Unix ar archive, returning (name, data_offset, size) tuples.
 
     Handles the GNU long-name table ("//" member with "/<offset>" references).
     Returns an empty list when the file is not an ar archive.
     """
-    members = []
+    members: list[tuple[str, int, int]] = []
     longnames = b""
     with open(path, "rb") as f:
         if f.read(8) != b"!<arch>\n":
-            return []
+            return members
         while True:
             header = f.read(60)
             if len(header) < 60:
@@ -1106,7 +1106,7 @@ def expand_baseline_archives(manifest: dict[str, str], workdir: Path) -> tuple[l
             result.append(path)
             continue
         with open(path, "rb") as f:
-            usable = []
+            usable: list[tuple[str, int, int]] = []
             for name, offset, size in members:
                 if name.endswith(".o") and not name.endswith(".rcgu.o"):
                     compiled_stems.add(os.path.join(os.path.dirname(manifest[path]), _stem(name)))
@@ -1252,7 +1252,7 @@ def load_baseline_objects(runfiles: RunfilesLike, rlocation_path: str | None) ->
     return sorted(load_baseline_manifest(runfiles, rlocation_path))
 
 
-def run_command(cmd: list[str], separate_stderr: bool = False) -> subprocess.CompletedProcess:
+def run_command(cmd: list[str], separate_stderr: bool = False) -> subprocess.CompletedProcess[str]:
     """Run a command and exit on failure.
 
     With separate_stderr the child's stderr is captured separately and

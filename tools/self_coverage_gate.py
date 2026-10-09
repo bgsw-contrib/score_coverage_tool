@@ -192,7 +192,7 @@ def render_table(totals: Totals, markdown: bool) -> str:
 
 def evaluate(totals: Totals, min_lines: float, min_branches: float) -> list[str]:
     """Return the list of gate violations (empty when the gate passes)."""
-    problems = []
+    problems: list[str] = []
     line_pct = pct(totals.lines_hit, totals.lines_found)
     branch_pct = pct(totals.branches_hit, totals.branches_found)
     if line_pct is None:

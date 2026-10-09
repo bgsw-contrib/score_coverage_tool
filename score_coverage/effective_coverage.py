@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> None:
         _main_llvm_cov(args, html_dir, justified_files)
 
 
-def _main_llvm_cov(args: argparse.Namespace, html_dir: Path, justified_files: dict) -> None:
+def _main_llvm_cov(args: argparse.Namespace, html_dir: Path, justified_files: dict[str, Any]) -> None:
     """Main logic for llvm-cov HTML format."""
 
     # Parse raw coverage totals from the index page (matches llvm-cov exactly).
@@ -108,7 +108,7 @@ def _main_llvm_cov(args: argparse.Namespace, html_dir: Path, justified_files: di
 
     effective_branch_covered = raw_branch_covered + total_justified_branches
 
-    stats = {
+    stats: dict[str, int | float] = {
         "total_instrumented_lines": raw_total,
         "covered_lines": raw_covered,
         "justified_lines": total_justified,
@@ -197,8 +197,8 @@ def _line_statuses(content: str) -> dict[int, str]:
 
 def _lines_with_uncovered_branches(content: str) -> set[int]:
     """Lines having a branch direction that no instantiation ever covered."""
-    covered: dict[str, set] = {}
-    uncovered: dict[str, set] = {}
+    covered: dict[str, set[str]] = {}
+    uncovered: dict[str, set[str]] = {}
     branch_line: dict[str, int] = {}
     for m in _BRANCH_RE.finditer(content):
         branch_id = m.group(3)
@@ -226,7 +226,7 @@ def _classify_justifications(
     for line_num, justification in justifications.items():
         status = statuses.get(line_num)
         has_uncovered_branches = line_num in branch_lines
-        entry = {
+        entry: dict[str, str | int] = {
             "file": html_file.stem,
             "line": line_num,
             "id": justification.get("id", ""),
@@ -254,7 +254,7 @@ def _restyle_rows(content: str, justifications: dict[int, dict[str, str]]) -> tu
     """Turn the count cell of justified uncovered rows into 'J' and recolor red regions."""
     modified = False
 
-    def replace_full_row(match: re.Match) -> str:
+    def replace_full_row(match: re.Match[str]) -> str:
         nonlocal modified
         line_num = int(match.group(2))
         if line_num not in justifications:
@@ -275,7 +275,7 @@ def _restyle_branches(
 ) -> tuple[str, bool]:
     """Restyle red branches on justified lines and count the truly uncovered directions once."""
     # A direction is covered if ANY instantiation covers it (llvm-cov's own rule).
-    covered_dirs: set = set()
+    covered_dirs: set[tuple[str, str]] = set()
     for m in _BRANCH_RE.finditer(content):
         if int(m.group(2)) not in justifications:
             continue
@@ -284,9 +284,9 @@ def _restyle_branches(
                 covered_dirs.add((m.group(3), direction))
 
     modified = False
-    counted: set = set()
+    counted: set[tuple[str, str]] = set()
 
-    def replace_branch(match: re.Match) -> str:
+    def replace_branch(match: re.Match[str]) -> str:
         nonlocal modified
         line_num = int(match.group(2))
         branch_content = match.group(4)
@@ -657,7 +657,7 @@ def _write_outputs(
     Both HTML backends produce exactly these two files; generate_coverage_html
     reads the effective percentage from report.json and displays summary.txt.
     """
-    report = {
+    report: dict[str, Any] = {
         "version": 1,
         "summary": stats,
         "applied_justifications": applied,
@@ -787,7 +787,7 @@ def _parse_lcov_totals(lcov_path: Path) -> dict[str, tuple[int, int]]:
 # =============================================================================
 
 
-def _main_gcovr(args: argparse.Namespace, html_dir: Path, justified_files: dict) -> None:
+def _main_gcovr(args: argparse.Namespace, html_dir: Path, justified_files: dict[str, Any]) -> None:
     """Main logic for gcovr HTML format (produced by lcov_to_html.py via gcovr)."""
 
     # Parse coverage totals from LCOV file or gcovr index page.
@@ -826,7 +826,7 @@ def _main_gcovr(args: argparse.Namespace, html_dir: Path, justified_files: dict)
     unjustified_uncovered = raw_uncovered - total_justified
     effective_branch_covered = raw_branch_covered + total_justified_branches
 
-    stats = {
+    stats: dict[str, int | float] = {
         "total_instrumented_lines": raw_total,
         "covered_lines": raw_covered,
         "justified_lines": total_justified,
@@ -955,7 +955,7 @@ def _find_gcovr_source_files(html_dir: Path) -> list[Path]:
       index.<basename>.<md5>.html
     The index is index.html (no dot-separated parts after "index").
     """
-    files = []
+    files: list[Path] = []
     for html_file in sorted(html_dir.glob("index.*.html")):
         # Skip function pages (contain ".functions." in name)
         if ".functions." in html_file.name:
@@ -1051,7 +1051,7 @@ def _process_gcovr_file(
     )
 
     line_effective_status: dict[int, str] = {}
-    lines_with_uncovered_branches: set = set()
+    lines_with_uncovered_branches: set[int] = set()
 
     for m in line_pattern.finditer(content):
         line_num = int(m.group(1))

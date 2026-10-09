@@ -11,7 +11,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 
-"""Static-analysis aspects for this repository's Python (ruff, pylint, ty).
+"""Static-analysis aspects for this repository's Python (ruff, ty).
 
 Declared here rather than in score_tooling so the config label resolves
 against this repo. Wired through the `lint` config in .bazelrc:
@@ -19,13 +19,8 @@ against this repo. Wired through the `lint` config in .bazelrc:
     bazel build --config=lint //score_coverage/... //tools/...
 """
 
-load("@score_tooling//third_party/lint:macros.bzl", "pylint_lint_aspect", "ruff_lint_aspect", "ty_lint_aspect")
+load("@score_tooling//third_party/lint:macros.bzl", "ruff_lint_aspect", "ty_lint_aspect")
 
 ruff = ruff_lint_aspect(config = Label("//:pyproject.toml"))
-
-pylint = pylint_lint_aspect(
-    binary = Label("@score_tooling//third_party/lint:pylint"),
-    config = Label("//:pyproject.toml"),
-)
 
 ty = ty_lint_aspect(config = Label("//:pyproject.toml"))
