@@ -72,5 +72,13 @@ bazel build --config=lint //score_coverage/... //tools/... //tests/...   # ruff,
 bazel coverage --combined_report=lcov //tests/unit/score_coverage:all
 bazel run //tools:self_coverage_gate -- --min-lines 95 --min-branches 87
 tests/end_to_end/run_end_to_end_test.sh            # end-to-end (downloads LLVM + Ferrocene)
+bazel test //tests/end_to_end/testcases:blackbox_test # pytest CLI case
 pre-commit run --all-files
 ```
+
+The end-to-end commands use the checked-in consumer workspace and reuse its
+Bazel output base, including extracted toolchains. This output base is separate
+from the main repository's, so nested Bazel commands do not wait on the outer
+test's lock. Run the end-to-end commands sequentially because they share the
+consumer's coverage report; the pytest CLI case deletes an existing report to
+exercise the missing-report diagnostic.
