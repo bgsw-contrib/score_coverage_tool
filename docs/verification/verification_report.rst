@@ -82,14 +82,16 @@ Test inventory
      - scope_transitive, scope_excludes, scope_baseline_objects, scope_gcno,
        scope_platform
    * - ``//tests/end_to_end/testcases:blackbox_test``
-     - 4
-     - gate_no_verdict, gate_exit_codes, summary_first
-   * - ``tests/end_to_end/run_end_to_end_test.sh`` (28 end-to-end checks)
-     - 28
-     - validation_ground_truth, instrumentation_hint, scope_platform, report_baseline_zero, report_relative_paths,
-       report_allowlist, report_unmapped, gcov_merge, gcov_baseline, gcov_html,
-       gate_exit_codes, gate_no_verdict, just_unknown_id, artifacts,
-       summary_first
+     - 38
+     - gate_no_verdict, gate_threshold, gate_exit_codes, summary_first,
+       validation_ground_truth, report_baseline_zero, report_merged_profile,
+       scope_platform, report_relative_paths, report_allowlist, report_unmapped,
+       report_outputs, artifacts, eff_metric, just_unknown_id
+   * - ``//tests/end_to_end/testcases:gcov_test``
+     - 9
+     - validation_ground_truth, instrumentation_hint, scope_platform,
+       report_unmapped, gcov_baseline, gcov_html, eff_gcovr, gate_exit_codes,
+       artifacts, summary_first
 
 Requirement coverage
 --------------------
@@ -108,7 +110,7 @@ documentation build.
    :columns: id;title;testlink
    :style: table
 
-Four requirements are verified outside the pytest suites and therefore carry no
+Three requirements are verified outside the pytest suites and therefore carry no
 generated link:
 
 - :need:`tool_req__coverage_scope_transitive`,
@@ -116,9 +118,9 @@ generated link:
   :need:`tool_req__coverage_scope_baseline_objects` are verified by the seventeen
   Starlark analysis tests in ``tests/unit/starlark`` (rules_testing
   produces no test properties).
-- :need:`tool_req__coverage_validation_ground_truth` is verified by the
-  end-to-end run ``tests/end_to_end/run_end_to_end_test.sh`` (golden LCOV
-  comparison, see below).
+
+The LLVM and gcov ground-truth comparisons both link to
+:need:`tool_req__coverage_validation_ground_truth` through pytest.
 
 .. needpie:: Test results of the linked test cases
    :labels: passed, failed, skipped
@@ -175,21 +177,39 @@ yamlfmt the workflows; copyright headers are checked on every file.
 End-to-end validation
 ---------------------
 
-``tests/end_to_end/run_end_to_end_test.sh`` builds a consumer workspace with a
-tested and an untested C++ library, a header-only library reached through
-``strip_include_prefix``, a tested Rust library and an untested Rust binary, one
-justified line, and asserts:
+The pytest targets build a consumer workspace with tested and untested C++
+and Rust sources, a header-only library reached through ``strip_include_prefix``,
+and one justified line. Bazel schedules the gcov target exclusively because
+the backends write to the same consumer report path.
 
-1. the gate fails at 100 % and passes at 10 % (effective and raw mode);
-2. the HTML, the summary and the archive tree are produced, the summary also
-   when the gate fails;
-3. the untested C++ file and the untested Rust binary appear with ``LH:0``;
-4. the LCOV matches ``expected_lcov.dat``, a hand-derived ground truth, record
-   by record;
-5. the justified line raises effective above raw coverage;
-6. fault injection: a corrupt report and a non-numeric threshold exit 2, and a
-   misspelt justification id is reported and does not raise the effective
-   coverage.
+The end-to-end pytest cases verify that the LLVM gate fails at 100 % and
+passes at 10 %, with and without justifications. They also verify Markdown
+summaries, including summary output when the gate fails. CLI cases use
+temporary workspaces to check exit 2 and diagnostics for missing or corrupt
+reports and an invalid threshold. An unknown marker ID emits a warning and
+leaves effective coverage equal to raw coverage. Cases needing a real LLVM
+report reuse one coverage build per pytest session.
+The LLVM LCOV cases read that build's report without additional CLI calls:
+they compare all line and branch records with ``expected_lcov.dat`` and
+check zero-hit baselines, measured C++ and Rust sources (including a library
+tested from a subpackage), host platform selection, canonical vendored-header
+paths, exclusion of forwarded third-party code, and absence of invented
+coverage for an uncompiled header.
+
+The LLVM artifact run also verifies that the effective gate passes at 10 %.
+The HTML cases unpack the CI ZIP to check zero-coverage line totals against
+LCOV, portable source and stylesheet links, canonical paths, and scope
+filtering. The archive checks compare the complete list of unmapped-source
+categories and verify the increase from raw to effective coverage. The raw
+gate at 10 % shares the HTML output check without justifications, and the
+effective gate at 100 % shares the failing summary case.
+
+The gcov cases verify the gate at 100 % and 10 %, compare archived LCOV with
+the hand-derived ``expected_lcov_gcov.dat``, and check target platform selection,
+archive navigation, unmapped sources, and effective coverage. The cases share
+one coverage build and read its archived results. The instrumentation filter
+case runs coverage with a narrower filter and checks the warning and the
+cross-package library's zero-hit baseline.
 
 Deviations
 ----------
@@ -202,6 +222,3 @@ Deviations
 - Starlark (``coverage_scope.bzl``, ``reporter_wrapper.bzl``) has no structural
   coverage tooling. The rule and aspect are verified by eight analysis tests
   and by the end-to-end run.
-- The gcovr backend of ``effective_coverage.py`` is unit-tested against real
-  gcovr 8.6 markup but is not reachable through ``generate_coverage_html`` in
-  this release (QNX flow, tooling issue #427).

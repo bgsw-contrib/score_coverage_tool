@@ -14,8 +14,10 @@
 
 import re
 from pathlib import Path
+from subprocess import CompletedProcess
+from zipfile import ZipFile
 
-from _blackbox_support import run_bazel, verifies
+from _blackbox_support import lcov_records, run_bazel, summary_metric, verifies
 
 _JUSTIFICATIONS = "tools/coverage/coverage_justifications.yaml"
 
@@ -60,31 +62,34 @@ def test_markdown_summary_contains_coverage_and_source_categories(
         assert marker in content, f"Summary is missing {marker!r}"
 
 
-@verifies("tool_req__coverage_summary_first", "tool_req__coverage_gate_exit_codes")
-def test_markdown_summary_is_written_when_gate_fails(consumer_with_llvm_coverage: Path, tmp_path: Path) -> None:
-    """Measured effective coverage below the required 100% fails the gate and still produces a summary."""
-    summary = tmp_path / "summary.md"
-    result = run_bazel(
-        consumer_with_llvm_coverage,
-        [
-            "run",
-            "@score_coverage//:generate_coverage_html",
-            "--",
-            "--yaml",
-            _JUSTIFICATIONS,
-            "--summary-md",
-            str(summary),
-        ],
-        expected_exit_code=1,
-        env={"COVERAGE_THRESHOLD": "100"},
-    )
+@verifies(
+    "tool_req__coverage_summary_first",
+    "tool_req__coverage_gate_threshold",
+    "tool_req__coverage_gate_exit_codes",
+    "tool_req__coverage_artifacts",
+    "tool_req__coverage_eff_metric",
+)
+def test_markdown_summary_and_zip_are_written_when_gate_fails(
+    llvm_rejected_run: tuple[Path, CompletedProcess[str]], llvm_lcov: dict[str, list[str]]
+) -> None:
+    """The 100% gate rejects the coverage and still leaves a summary and a usable ZIP."""
+    output, result = llvm_rejected_run
     gate_failure = re.search(r"ERROR: Effective coverage (\d+(?:\.\d+)?)% is below threshold 100%", result.stderr)
     assert gate_failure is not None, result.stderr
     assert 0 < float(gate_failure.group(1)) < 100
-    content = summary.read_text(encoding="utf-8")
+    content = (output / "summary.md").read_text(encoding="utf-8")
     assert "## Coverage summary" in content
     assert "| Lines |" in content
     assert "Raw vs effective" in content
+    with ZipFile(output / "coverage_artifacts.zip") as report:
+        assert report.testzip() is None
+        assert "artifacts/coverage_linux/index.html" in report.namelist()
+        assert lcov_records(report.read("artifacts/coverage_report.dat").decode("utf-8")) == llvm_lcov
+        justification = report.read("artifacts/justification_report/summary.txt").decode("utf-8")
+    assert summary_metric(justification, "Justified lines") > 0
+    assert summary_metric(justification, "Effective line coverage", "%") > summary_metric(
+        justification, "Raw line coverage", "%"
+    )
 
 
 @verifies("tool_req__coverage_summary_first")

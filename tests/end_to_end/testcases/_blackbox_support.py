@@ -15,11 +15,74 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+from html.parser import HTMLParser
 from pathlib import Path
 
 from attribute_plugin import Decorator, DerivationTechnique, add_test_properties
+
+EXPECTED_CPP_UNMAPPED = (
+    "compiled-without-code\tsrc/empty_unit.cpp",
+    "declaration-only\tlib/cross_pkg.h",
+    "declaration-only\tsrc/coverable.h",
+    "declaration-only\tsrc/uncovered.h",
+    "no-data\tsrc/platform_dep.h",
+    "no-data\tsrc/unused_api.h",
+)
+
+
+class HtmlPage(HTMLParser):
+    """Read links, stylesheets and table cells without depending on HTML formatting or CSS classes."""
+
+    def __init__(self, content: str) -> None:
+        super().__init__()
+        self.anchors: list[tuple[str, str]] = []
+        self.stylesheets: list[str] = []
+        self.rows: list[list[str]] = []
+        self._anchor_href: str | None = None
+        self._anchor_text: list[str] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+        self.feed(content)
+
+    @property
+    def links(self) -> list[str]:
+        """Return the destinations of the page's anchors."""
+        return [href for _, href in self.anchors]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        href = attributes.get("href")
+        if tag == "a" and href:
+            self._anchor_href = href
+            self._anchor_text = []
+        if tag == "link" and href and "stylesheet" in (attributes.get("rel") or "").split():
+            self.stylesheets.append(href)
+        if tag == "tr":
+            self._row = []
+        if tag in ("td", "th"):
+            self._cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._anchor_href is not None:
+            self._anchor_text.append(data)
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._anchor_href is not None:
+            text = " ".join("".join(self._anchor_text).split())
+            self.anchors.append((text, self._anchor_href))
+            self._anchor_href = None
+        if tag in ("td", "th") and self._cell is not None:
+            if self._row is not None:
+                self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        if tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
 
 
 def run_bazel(
@@ -60,6 +123,41 @@ def run_bazel(
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     return result
+
+
+def lcov_records(content: str) -> dict[str, list[str]]:
+    """Index LCOV records by source path, ignoring comments and function metadata.
+
+    The hand-derived reference validates line and branch data, independently
+    of entry order and compiler-generated function names. Reject duplicate or
+    incomplete records rather than hiding them during normalization.
+    """
+    records: dict[str, list[str]] = {}
+    source: str | None = None
+    entries: list[str] = []
+    for line in content.splitlines():
+        if not line or line.startswith(("#", "FN")):
+            continue
+        if line.startswith("SF:"):
+            assert source is None, f"Unterminated LCOV record for {source}"
+            source, entries = line[3:], []
+        elif line == "end_of_record":
+            assert source is not None, "LCOV record has no source path"
+            assert source not in records, f"Duplicate LCOV record for {source}"
+            records[source] = sorted(entries)
+            source = None
+        else:
+            assert source is not None, f"LCOV entry outside a source record: {line}"
+            entries.append(line)
+    assert source is None, f"Unterminated LCOV record for {source}"
+    return records
+
+
+def summary_metric(content: str, label: str, unit: str = "") -> float:
+    """Read a named number from the human-readable justification summary."""
+    metric = re.search(rf"^{re.escape(label)}:[ \t]+(\d+(?:\.\d+)?){re.escape(unit)}$", content, re.MULTILINE)
+    assert metric is not None, f"Missing or invalid {label!r} in justification summary:\n{content}"
+    return float(metric.group(1))
 
 
 def verifies(*requirements: str, derivation: DerivationTechnique = "requirements-analysis") -> Decorator:
