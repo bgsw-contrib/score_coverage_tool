@@ -82,3 +82,10 @@ from the main repository's, so nested Bazel commands do not wait on the outer
 test's lock. Run the end-to-end commands sequentially because they share the
 consumer's coverage report; the pytest CLI case deletes an existing report to
 exercise the missing-report diagnostic.
+
+Compatibility tests run coverage against baselibs, lifecycle, logging and persistency.
+Select one with
+`bazel test //tests/compatibility:consumers --test_arg=-k --test_arg=logging`.
+Each CI job retains its consumer's command logs, status summary and coverage report.
+The tests follow current consumer branches; testing pinned revisions is tracked in
+[#42](https://github.com/eclipse-score/coverage_tool/issues/42).
